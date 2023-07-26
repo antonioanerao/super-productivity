@@ -18,6 +18,13 @@ export const BASIC_PROJECT_CONFIG_FORM_CONFIG: ConfigFormSection<Project> = {
       },
     },
     {
+      key: 'isEnableBacklog',
+      type: 'checkbox',
+      templateOptions: {
+        label: T.F.PROJECT.FORM_BASIC.L_ENABLE_BACKLOG,
+      },
+    },
+    {
       key: 'isHiddenFromMenu',
       type: 'checkbox',
       templateOptions: {
@@ -49,6 +56,13 @@ export const CREATE_PROJECT_BASIC_CONFIG_FORM_CONFIG: GenericConfigFormSection =
       templateOptions: {
         label: T.F.PROJECT.FORM_THEME.L_THEME_COLOR,
         type: 'color',
+      },
+    },
+    {
+      key: 'isBacklogDisabled',
+      type: 'checkbox',
+      templateOptions: {
+        label: T.F.PROJECT.FORM_BASIC.L_ENABLE_BACKLOG,
       },
     },
   ],

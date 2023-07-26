@@ -58,6 +58,7 @@ import { TaskRepeatCfgService } from '../../task-repeat-cfg/task-repeat-cfg.serv
 import { DialogConfirmComponent } from '../../../ui/dialog-confirm/dialog-confirm.component';
 import { Update } from '@ngrx/entity';
 import { SnackService } from '../../../core/snack/snack.service';
+import { isToday } from '../../../util/is-today.util';
 
 @Component({
   selector: 'task',
@@ -132,7 +133,16 @@ export class TaskComponent implements OnInit, OnDestroy, AfterViewInit {
       )
     : EMPTY;
 
+  isShowMoveFromAndToBacklogBtns$: Observable<boolean> = this._task$.pipe(
+    take(1),
+    switchMap((task) =>
+      task.projectId ? this._projectService.getByIdOnce$(task.projectId) : EMPTY,
+    ),
+    map((project) => project.isEnableBacklog),
+  );
+
   isFirstLineHover: boolean = false;
+  isRepeatTaskCreatedToday: boolean = false;
 
   private _dragEnterTarget?: HTMLElement;
   private _destroy$: Subject<boolean> = new Subject<boolean>();
@@ -162,6 +172,7 @@ export class TaskComponent implements OnInit, OnDestroy, AfterViewInit {
     this.taskIdWithPrefix = 't-' + this.task.id;
     this.isDone = v.isDone;
     this.isTodayTag = v.tagIds.includes(TODAY_TAG.id);
+    this.isRepeatTaskCreatedToday = !!(this.task.repeatCfgId && isToday(v.created));
     this._task$.next(v);
   }
 
@@ -864,23 +875,6 @@ export class TaskComponent implements OnInit, OnDestroy, AfterViewInit {
       }
     }
 
-    // move focus up
-    if (
-      (!isShiftOrCtrlPressed && ev.key === 'ArrowUp') ||
-      checkKeyCombo(ev, keys.selectPreviousTask)
-    ) {
-      ev.preventDefault();
-      this.focusPrevious();
-    }
-    // move focus down
-    if (
-      (!isShiftOrCtrlPressed && ev.key === 'ArrowDown') ||
-      checkKeyCombo(ev, keys.selectNextTask)
-    ) {
-      ev.preventDefault();
-      this.focusNext();
-    }
-
     // collapse sub tasks
     if (ev.key === 'ArrowLeft' || checkKeyCombo(ev, keys.collapseSubTasks)) {
       const hasSubTasks = this.task.subTasks && (this.task.subTasks as any).length > 0;
@@ -918,12 +912,35 @@ export class TaskComponent implements OnInit, OnDestroy, AfterViewInit {
       ev.stopPropagation();
       ev.preventDefault();
       // timeout required to let changes take place @TODO hacky
-      setTimeout(this.focusSelf.bind(this), 50);
+      setTimeout(this.focusSelf.bind(this));
+      setTimeout(this.focusSelf.bind(this), 10);
+      return;
     }
     if (checkKeyCombo(ev, keys.moveTaskDown)) {
       this._taskService.moveDown(this.task.id, this.task.parentId, this.isBacklog);
+      // timeout required to let changes take place @TODO hacky
+      setTimeout(this.focusSelf.bind(this));
+      setTimeout(this.focusSelf.bind(this), 10);
       ev.stopPropagation();
       ev.preventDefault();
+      return;
+    }
+
+    // move focus up
+    if (
+      (!isShiftOrCtrlPressed && ev.key === 'ArrowUp') ||
+      checkKeyCombo(ev, keys.selectPreviousTask)
+    ) {
+      ev.preventDefault();
+      this.focusPrevious();
+    }
+    // move focus down
+    if (
+      (!isShiftOrCtrlPressed && ev.key === 'ArrowDown') ||
+      checkKeyCombo(ev, keys.selectNextTask)
+    ) {
+      ev.preventDefault();
+      this.focusNext();
     }
   }
 }

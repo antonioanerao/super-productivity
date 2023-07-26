@@ -28,7 +28,6 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfigState = {
     firstDayOfWeek: 1,
     startOfNextDay: 0,
     isDisableAnimations: false,
-    // @ts-ignore
     taskNotesTpl: `**How can I best achieve it now?**
 
 **What do I want?**
@@ -57,6 +56,12 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfigState = {
     takeABreakMinWorkingTime: 60 * minute,
     takeABreakSnoozeTime: 15 * minute,
     motivationalImgs: [],
+  },
+  dominaMode: {
+    isEnabled: false,
+    interval: 5 * minute,
+    volume: 75,
+    text: 'Your current task is: ${taskTitle}',
   },
   pomodoro: {
     isEnabled: false,
@@ -120,9 +125,9 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfigState = {
   },
   sound: {
     volume: 75,
-    isPlayDoneSound: true,
     isIncreaseDoneSoundPitch: true,
     doneSound: 'done2.mp3',
+    breakReminderSound: null,
   },
   trackingReminder: {
     isEnabled: true,
@@ -153,7 +158,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfigState = {
       baseUrl: null,
       userName: null,
       password: null,
-      syncFilePath: null,
+      syncFilePath: 'super-productivity-backup.json',
     },
 
     localFileSync: {

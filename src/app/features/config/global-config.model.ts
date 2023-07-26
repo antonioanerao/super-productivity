@@ -91,9 +91,9 @@ export type LanguageConfig = Readonly<{
 }>;
 
 export type SoundConfig = Readonly<{
-  isPlayDoneSound: boolean;
   isIncreaseDoneSoundPitch: boolean;
-  doneSound: string;
+  doneSound: string | null;
+  breakReminderSound: string | null;
   volume: number;
 }>;
 
@@ -127,6 +127,13 @@ export type TrackingReminderConfig = Readonly<{
   minTime: number;
 }>;
 
+export type DominaModeConfig = Readonly<{
+  isEnabled: boolean;
+  text: string;
+  interval: number;
+  volume: number;
+}>;
+
 // NOTE: config properties being undefined always means that they should be overwritten with the default value
 export type GlobalConfigState = Readonly<{
   lang: LanguageConfig;
@@ -140,6 +147,7 @@ export type GlobalConfigState = Readonly<{
   sound: SoundConfig;
   trackingReminder: TrackingReminderConfig;
   timeline: TimelineConfig;
+  dominaMode: DominaModeConfig;
 
   sync: SyncConfig;
 
