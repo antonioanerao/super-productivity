@@ -1,6 +1,6 @@
-import { BrowserWindow, ipcMain } from 'electron';
+import { BrowserWindow, ipcMain, IpcMainEvent } from 'electron';
 import { IPC } from './shared-with-frontend/ipc-events.const';
-import { warn } from 'electron-log';
+import { warn } from 'electron-log/main';
 import { GlobalConfigState } from '../src/app/features/config/global-config.model';
 
 let cbs: ((settings: GlobalConfigState) => void)[] = [];
@@ -15,7 +15,7 @@ export const getSettings = (
 ipcMain.on(IPC.TRANSFER_SETTINGS_TO_ELECTRON, getSettingsCb);
 
 // eslint-disable-next-line prefer-arrow/prefer-arrow-functions
-function getSettingsCb(ev: Event, settings: GlobalConfigState): void {
+function getSettingsCb(ev: IpcMainEvent, settings: GlobalConfigState): void {
   if (cbs.length) {
     cbs.forEach((cb) => cb(settings));
     cbs = [];

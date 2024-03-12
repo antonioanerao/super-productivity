@@ -44,8 +44,17 @@ export const GITHUB_CONFIG_FORM: LimitedFormlyFieldConfig<GithubCfg>[] = [
     hideExpression: (model: any) => !model.isEnabled,
     templateOptions: {
       label: T.F.GITHUB.FORM.TOKEN,
+      required: true,
       description: T.F.GITHUB.FORM.TOKEN_DESCRIPTION,
       type: 'password',
+    },
+  },
+  {
+    type: 'link',
+    hideExpression: (model: any) => !model.isEnabled,
+    templateOptions: {
+      url: 'https://docs.github.com/en/enterprise-server@3.9/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens',
+      txt: T.F.ISSUE.HOW_TO_GET_A_TOKEN,
     },
   },
   {
@@ -83,6 +92,7 @@ export const GITHUB_CONFIG_FORM: LimitedFormlyFieldConfig<GithubCfg>[] = [
   {
     key: 'filterIssuesAssignedToMe',
     type: 'checkbox',
+    hideExpression: (model: any) => !model.isEnabled,
     templateOptions: {
       label: T.F.GITHUB.FORM.IS_ASSIGNEE_FILTER,
     },

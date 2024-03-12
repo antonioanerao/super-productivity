@@ -39,16 +39,25 @@
     </mat-menu>
   </div>
 
-  <button
-    #menuEntry
-    class="route-link"
-    mat-menu-item
-    routerLink="timeline"
-    routerLinkActive="isActiveRoute"
-  >
-    <mat-icon>filter_list</mat-icon>
-    <span class="text">{{T.F.TIMELINE.MENU_TITLE|translate}}</span>
-  </button>
+  <!-- class title missleading, but works ;) -->
+  <div class="tag">
+    <button
+      class="route-link"
+      mat-menu-item
+      routerLink="timeline"
+      routerLinkActive="isActiveRoute"
+    >
+      <mat-icon>filter_list</mat-icon>
+      <span class="text">{{T.F.TIMELINE.MENU_TITLE|translate}}</span>
+    </button>
+    <button
+      (click)="openTimelineSettings()"
+      class="tag-settings-btn"
+      mat-icon-button
+    >
+      <mat-icon>settings</mat-icon>
+    </button>
+  </div>
 
   <button
     #menuEntry
@@ -64,7 +73,7 @@
 
 <section
   *ngIf="projectList$|async as projectList"
-  class="projects"
+  class="projects tour-projects"
 >
   <button
     #menuEntry
@@ -108,8 +117,8 @@
         <mat-icon
           class="drag-handle"
           drag-handle
-          >list</mat-icon
-        >
+          >list
+        </mat-icon>
         <span class="text">{{project.title}}</span>
       </button>
 
@@ -173,6 +182,7 @@
   </button>
 
   <div
+    *ngIf="tagList.length"
     [@standardList]="tagList?.length"
     [dragulaModel]="tagList"
     [dragula]="TAG_SIDE_NAV"
@@ -197,8 +207,8 @@
         <mat-icon
           class="drag-handle"
           drag-handle
-          >style</mat-icon
-        >
+          >style
+        </mat-icon>
         <span class="text">{{tag.title}}</span>
       </button>
 
@@ -221,6 +231,13 @@
       </mat-menu>
     </div>
   </div>
+  <div
+    *ngIf="!tagList.length && isTagsExpanded"
+    class="no-tags-info"
+  >
+    {{T.MH.NO_TAG_INFO|translate}}
+  </div>
+
   <!--  <button (click)="addTag()"-->
   <!--          *ngIf="isTagsExpanded"-->
   <!--   #menuEntry mat-menu-item>-->
@@ -232,7 +249,79 @@
 <section class="app">
   <button
     #menuEntry
+    [mat-menu-trigger-for]="helpMenu"
     class="route-link"
+    mat-menu-item
+  >
+    <mat-icon>help_center</mat-icon>
+    <span class="text">{{T.MH.HELP|translate}}</span>
+  </button>
+
+  <mat-menu #helpMenu="matMenu">
+    <ng-template matMenuContent>
+      <a
+        mat-menu-item
+        href="https://github.com/johannesjo/super-productivity/blob/master/README.md#question-how-to-use-it"
+        target="_blank"
+      >
+        <mat-icon>help_center</mat-icon>
+        <span class="text">{{T.MH.HM.GET_HELP_ONLINE|translate}}</span>
+      </a>
+
+      <a
+        class="route-link"
+        mat-menu-item
+        [href]="getGithubErrorUrl()"
+        target="_blank"
+      >
+        <mat-icon>bug_report</mat-icon>
+        <span class="text">{{T.MH.HM.REPORT_A_PROBLEM|translate}}</span>
+      </a>
+
+      <a
+        mat-menu-item
+        href="https://github.com/johannesjo/super-productivity/blob/master/CONTRIBUTING.md"
+        target="_blank"
+      >
+        <mat-icon>volunteer_activism</mat-icon>
+        <span class="text">{{T.MH.HM.CONTRIBUTE|translate}}</span>
+      </a>
+
+      <button
+        (click)="startTour(TourId.Welcome)"
+        mat-menu-item
+      >
+        <mat-icon>directions</mat-icon>
+        <span class="text">{{T.MH.HM.START_WELCOME|translate}}</span>
+      </button>
+      <button
+        *ngIf="IS_MOUSE_PRIMARY"
+        (click)="startTour(TourId.KeyboardNav)"
+        mat-menu-item
+      >
+        <mat-icon>directions</mat-icon>
+        <span class="text">{{T.MH.HM.KEYBOARD|translate}}</span>
+      </button>
+      <button
+        (click)="startTour(TourId.Sync)"
+        mat-menu-item
+      >
+        <mat-icon>directions</mat-icon>
+        <span class="text">{{T.MH.HM.SYNC|translate}}</span>
+      </button>
+      <button
+        (click)="startTour(TourId.Calendars)"
+        mat-menu-item
+      >
+        <mat-icon>directions</mat-icon>
+        <span class="text">{{T.MH.HM.CALENDARS|translate}}</span>
+      </button>
+    </ng-template>
+  </mat-menu>
+
+  <button
+    #menuEntry
+    class="route-link tour-settingsMenuBtn"
     mat-menu-item
     routerLink="config"
     routerLinkActive="isActiveRoute"

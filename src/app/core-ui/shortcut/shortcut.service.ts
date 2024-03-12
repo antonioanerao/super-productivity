@@ -10,13 +10,13 @@ import { DialogAddNoteComponent } from '../../features/note/dialog-add-note/dial
 import { BookmarkService } from '../../features/bookmark/bookmark.service';
 import { IPC } from '../../../../electron/shared-with-frontend/ipc-events.const';
 import { UiHelperService } from '../../features/ui-helper/ui-helper.service';
-import { ElectronService } from '../../core/electron/electron.service';
-import { ipcRenderer } from 'electron';
 import { WorkContextService } from '../../features/work-context/work-context.service';
 import { WorkContextType } from '../../features/work-context/work-context.model';
 import { SnackService } from '../../core/snack/snack.service';
 import { TranslateService } from '@ngx-translate/core';
 import { T } from '../../t.const';
+import { Store } from '@ngrx/store';
+import { showFocusOverlay } from '../../features/focus-mode/store/focus-mode.actions';
 
 @Injectable({
   providedIn: 'root',
@@ -27,7 +27,6 @@ export class ShortcutService {
   constructor(
     private _configService: GlobalConfigService,
     private _router: Router,
-    private _electronService: ElectronService,
     private _layoutService: LayoutService,
     private _matDialog: MatDialog,
     private _taskService: TaskService,
@@ -38,6 +37,7 @@ export class ShortcutService {
     private _bookmarkService: BookmarkService,
     private _translateService: TranslateService,
     private _ngZone: NgZone,
+    private _store: Store,
   ) {
     this._activatedRoute.queryParams.subscribe((params) => {
       if (params && params.backlogPos) {
@@ -47,20 +47,17 @@ export class ShortcutService {
 
     // GLOBAL SHORTCUTS
     if (IS_ELECTRON) {
-      (this._electronService.ipcRenderer as typeof ipcRenderer).on(
-        IPC.TASK_TOGGLE_START,
-        () => {
-          this._ngZone.run(() => {
-            this._taskService.toggleStartTask();
-          });
-        },
-      );
-      (this._electronService.ipcRenderer as typeof ipcRenderer).on(IPC.ADD_TASK, () => {
+      window.ea.on(IPC.TASK_TOGGLE_START, () => {
+        this._ngZone.run(() => {
+          this._taskService.toggleStartTask();
+        });
+      });
+      window.ea.on(IPC.ADD_TASK, () => {
         this._ngZone.run(() => {
           this._layoutService.showAddTaskBar();
         });
       });
-      (this._electronService.ipcRenderer as typeof ipcRenderer).on(IPC.ADD_NOTE, () => {
+      window.ea.on(IPC.ADD_NOTE, () => {
         if (this._matDialog.openDialogs.length === 0) {
           this._ngZone.run(() => {
             this._matDialog.open(DialogAddNoteComponent, {
@@ -112,8 +109,14 @@ export class ShortcutService {
       this._router.navigate(['/active/tasks'], {
         queryParams: { backlogPos },
       });
+    } else if (checkKeyCombo(ev, keys.goToFocusMode)) {
+      this._store.dispatch(showFocusOverlay());
     } else if (checkKeyCombo(ev, keys.goToWorkView)) {
-      this._router.navigate(['/active/tasks']);
+      this._router.navigate(['/active/tasks']).then(() => {
+        window.setTimeout(() => {
+          this._taskService.focusFirstTaskIfVisible();
+        });
+      });
     } else if (checkKeyCombo(ev, keys.goToTimeline)) {
       this._router.navigate(['/timeline']);
     } else if (checkKeyCombo(ev, keys.goToSettings)) {
@@ -170,9 +173,7 @@ export class ShortcutService {
     // special hidden dev tools combo to use them for production
     if (IS_ELECTRON) {
       if (checkKeyCombo(ev, 'Ctrl+Shift+J')) {
-        (this._electronService.ipcRenderer as typeof ipcRenderer).send(
-          'TOGGLE_DEV_TOOLS',
-        );
+        window.ea.openDevTools();
       } else if (checkKeyCombo(ev, keys.zoomIn)) {
         this._uiHelperService.zoomBy(0.05);
       } else if (checkKeyCombo(ev, keys.zoomOut)) {

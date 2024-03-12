@@ -74,6 +74,8 @@ const _addNewIssueFields = (task: Task): Task => {
           issueLastUpdated: null,
           // @ts-ignore
           issueWasUpdated: null,
+          // @ts-ignore
+          issueProviderId: null,
           ...task,
         };
   } else {
@@ -153,6 +155,7 @@ const _makeNullAndArraysConsistent = (task: Task): Task => {
     issueLastUpdated: task.issueLastUpdated ?? null,
     issueAttachmentNr: task.issueAttachmentNr ?? null,
     issuePoints: task.issuePoints ?? null,
+    issueTimeTracked: task.issueTimeTracked ?? null,
   };
 };
 

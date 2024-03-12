@@ -4,8 +4,10 @@ import { LanguageCode, MODEL_VERSION_KEY } from '../../app.constants';
 import { SyncProvider } from '../../imex/sync/sync-provider.model';
 import { KeyboardConfig } from './keyboard-config.model';
 
+export type DarkModeCfg = 'dark' | 'light' | 'system';
+
 export type MiscConfig = Readonly<{
-  isDarkMode: boolean;
+  darkMode: DarkModeCfg;
   isAutMarkParentAsDone: boolean;
   isAutoStartNextTask: boolean;
   isConfirmBeforeExit: boolean;
@@ -99,6 +101,8 @@ export type SoundConfig = Readonly<{
 
 export type SyncConfig = Readonly<{
   isEnabled: boolean;
+  isEncryptionEnabled: boolean;
+  encryptionPassword: string | null;
   isCompressionEnabled: boolean;
   syncProvider: SyncProvider | null;
   syncInterval: number;
@@ -108,17 +112,28 @@ export type SyncConfig = Readonly<{
   localFileSync: LocalFileSyncConfig;
 }>;
 
-export type TimelineCalendarProvider = Readonly<{
-  icalUrl: string;
-  icon: string | null;
+export type CalendarIntegrationConfig = Readonly<{
+  calendarProviders: CalendarProvider[];
+}>;
+export type CalendarProvider = Readonly<{
   isEnabled: boolean;
+  id: string;
+  icalUrl: string;
+  icon?: string;
+  defaultProjectId: string | null;
+  checkUpdatesEvery: number;
+  showBannerBeforeThreshold: null | number;
 }>;
 
 export type TimelineConfig = Readonly<{
   isWorkStartEndEnabled: boolean;
   workStart: string;
   workEnd: string;
-  calendarProviders: TimelineCalendarProvider[];
+}>;
+
+export type ReminderConfig = Readonly<{
+  isCountdownBannerEnabled: boolean;
+  countdownDuration: number;
 }>;
 
 export type TrackingReminderConfig = Readonly<{
@@ -134,6 +149,11 @@ export type DominaModeConfig = Readonly<{
   volume: number;
 }>;
 
+export type FocusModeConfig = Readonly<{
+  isAlwaysUseFocusMode: boolean;
+  isSkipPreparation: boolean;
+}>;
+
 // NOTE: config properties being undefined always means that they should be overwritten with the default value
 export type GlobalConfigState = Readonly<{
   lang: LanguageConfig;
@@ -146,8 +166,11 @@ export type GlobalConfigState = Readonly<{
   localBackup: LocalBackupConfig;
   sound: SoundConfig;
   trackingReminder: TrackingReminderConfig;
+  calendarIntegration: CalendarIntegrationConfig;
+  reminder: ReminderConfig;
   timeline: TimelineConfig;
   dominaMode: DominaModeConfig;
+  focusMode: FocusModeConfig;
 
   sync: SyncConfig;
 
@@ -160,7 +183,9 @@ export type GlobalSectionConfig =
   | MiscConfig
   | PomodoroConfig
   | KeyboardConfig
+  | CalendarIntegrationConfig
   | TimelineConfig
+  | ReminderConfig
   | SyncConfig;
 type Omit<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>>;
 

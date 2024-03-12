@@ -1,5 +1,9 @@
-import { ChangeDetectionStrategy, Component, Input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, HostListener, Input } from '@angular/core';
 import { TimelineFromCalendarEvent } from '../timeline.model';
+import { TaskService } from '../../tasks/task.service';
+import { Store } from '@ngrx/store';
+import { selectCalendarProviderById } from '../../config/store/global-config.reducer';
+import { first } from 'rxjs/operators';
 
 @Component({
   selector: 'timeline-calendar-event',
@@ -10,5 +14,29 @@ import { TimelineFromCalendarEvent } from '../timeline.model';
 export class TimelineCalendarEventComponent {
   @Input() calendarEvent?: TimelineFromCalendarEvent;
 
-  constructor() {}
+  @HostListener('click', ['$event'])
+  async onClick(): Promise<void> {
+    if (this.calendarEvent) {
+      const getCalProvider = this.calendarEvent.calProviderId
+        ? await this._store
+            .select(selectCalendarProviderById, { id: this.calendarEvent.calProviderId })
+            .pipe(first())
+            .toPromise()
+        : undefined;
+
+      this._taskService.addAndSchedule(
+        this.calendarEvent.title,
+        {
+          projectId: getCalProvider?.defaultProjectId || null,
+          issueId: this.calendarEvent.id,
+          issueProviderId: this.calendarEvent.calProviderId,
+          issueType: 'CALENDAR',
+          timeEstimate: this.calendarEvent.duration,
+        },
+        this.calendarEvent.start,
+      );
+    }
+  }
+
+  constructor(private _taskService: TaskService, private _store: Store) {}
 }

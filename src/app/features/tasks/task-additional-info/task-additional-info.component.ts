@@ -52,7 +52,7 @@ import { fadeAnimation } from '../../../ui/animations/fade.ani';
 import { swirlAnimation } from '../../../ui/animations/swirl-in-out.ani';
 import { DialogTimeEstimateComponent } from '../dialog-time-estimate/dialog-time-estimate.component';
 import { MatDialog } from '@angular/material/dialog';
-import { IS_TOUCH_ONLY, isTouchOnly } from '../../../util/is-touch-only';
+import { isTouchOnly } from '../../../util/is-touch-only';
 import { DialogAddTaskReminderComponent } from '../dialog-add-task-reminder/dialog-add-task-reminder.component';
 import { AddTaskReminderInterface } from '../dialog-add-task-reminder/add-task-reminder-interface';
 import { ReminderCopy } from '../../reminder/reminder.model';
@@ -65,10 +65,7 @@ import { IssueData, IssueProviderKey } from '../../issue/issue.model';
 import { JIRA_TYPE } from '../../issue/issue.const';
 import { ProjectService } from '../../project/project.service';
 import { IS_ELECTRON } from '../../../app.constants';
-import { IPC } from '../../../../../electron/shared-with-frontend/ipc-events.const';
-import { ElectronService } from '../../../core/electron/electron.service';
 import { LayoutService } from '../../../core-ui/layout/layout.service';
-import { ipcRenderer } from 'electron';
 import { devError } from '../../../util/dev-error';
 import { SS } from '../../../core/persistence/storage-keys.const';
 import { IS_MOBILE } from '../../../util/is-mobile';
@@ -76,6 +73,7 @@ import { GlobalConfigService } from '../../config/global-config.service';
 import { shareReplayUntil } from '../../../util/share-replay-until';
 import { TranslateService } from '@ngx-translate/core';
 import { getTaskRepeatInfoText } from './get-task-repeat-info-text.util';
+import { IS_TOUCH_PRIMARY } from '../../../util/is-mouse-primary';
 
 interface IssueAndType {
   id: string | number | null;
@@ -101,7 +99,7 @@ export class TaskAdditionalInfoComponent implements AfterViewInit, OnDestroy {
   itemEls?: QueryList<TaskAdditionalInfoItemComponent>;
   @ViewChild('attachmentPanelElRef')
   attachmentPanelElRef?: TaskAdditionalInfoItemComponent;
-  IS_TOUCH_ONLY = IS_TOUCH_ONLY;
+  IS_TOUCH_PRIMARY = IS_TOUCH_PRIMARY;
 
   _onDestroy$ = new Subject<void>();
 
@@ -158,6 +156,9 @@ export class TaskAdditionalInfoComponent implements AfterViewInit, OnDestroy {
     this.issueDataTrigger$.pipe(
       switchMap((args) => {
         if (args && args.id && args.type) {
+          if (this._taskData?.issueType === 'CALENDAR') {
+            return of(null);
+          }
           if (!this._taskData || !this._taskData.projectId) {
             throw new Error('task data not ready');
           }
@@ -173,7 +174,7 @@ export class TaskAdditionalInfoComponent implements AfterViewInit, OnDestroy {
                   ? { issueData: issueDataIfGiven, issueType: args.type }
                   : issueDataIfGiven,
               ),
-            ) as Observable<false | IssueDataAndType>;
+            ) as Observable<false | null | IssueDataAndType>;
         }
         return of(null);
       }),
@@ -230,7 +231,6 @@ export class TaskAdditionalInfoComponent implements AfterViewInit, OnDestroy {
     private _matDialog: MatDialog,
     private _projectService: ProjectService,
     private readonly _attachmentService: TaskAttachmentService,
-    private _electronService: ElectronService,
     private _translateService: TranslateService,
     @Inject(LOCALE_ID) private locale: string,
     private _cd: ChangeDetectorRef,
@@ -267,15 +267,12 @@ export class TaskAdditionalInfoComponent implements AfterViewInit, OnDestroy {
         )
         .subscribe((jiraCfg) => {
           if (jiraCfg.isEnabled) {
-            (this._electronService.ipcRenderer as typeof ipcRenderer).send(
-              IPC.JIRA_SETUP_IMG_HEADERS,
-              {
-                jiraCfg,
-                wonkyCookie:
-                  jiraCfg.isWonkyCookieMode &&
-                  sessionStorage.getItem(SS.JIRA_WONKY_COOKIE),
-              },
-            );
+            window.ea.jiraSetupImgHeaders({
+              jiraCfg,
+              wonkyCookie: jiraCfg.isWonkyCookieMode
+                ? sessionStorage.getItem(SS.JIRA_WONKY_COOKIE) || undefined
+                : undefined,
+            });
           }
         });
     }
@@ -418,7 +415,7 @@ export class TaskAdditionalInfoComponent implements AfterViewInit, OnDestroy {
 
   editTaskRepeatCfg(): void {
     this._matDialog.open(DialogEditTaskRepeatCfgComponent, {
-      restoreFocus: false,
+      restoreFocus: true,
       data: {
         task: this.task,
       },

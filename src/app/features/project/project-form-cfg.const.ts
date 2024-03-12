@@ -61,6 +61,7 @@ export const CREATE_PROJECT_BASIC_CONFIG_FORM_CONFIG: GenericConfigFormSection =
     {
       key: 'isBacklogDisabled',
       type: 'checkbox',
+      defaultValue: false,
       templateOptions: {
         label: T.F.PROJECT.FORM_BASIC.L_ENABLE_BACKLOG,
       },

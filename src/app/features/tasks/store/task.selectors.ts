@@ -67,6 +67,9 @@ export const selectIsTaskDataLoaded = createSelector(
 export const selectCurrentTask = createSelector(selectTaskFeatureState, (s) =>
   s.currentTaskId ? (s.entities[s.currentTaskId] as Task) : null,
 );
+export const selectLastCurrentTask = createSelector(selectTaskFeatureState, (s) =>
+  s.lastCurrentTaskId ? (s.entities[s.lastCurrentTaskId] as Task) : null,
+);
 
 export const selectCurrentTaskOrParentWithData = createSelector(
   selectTaskFeatureState,
@@ -172,6 +175,12 @@ export const selectTaskById = createSelector(
   (state: TaskState, props: { id: string }): Task => state.entities[props.id] as Task,
 );
 
+export const selectTaskByIssueId = createSelector(
+  selectAllTasks,
+  (tasks: Task[], props: { issueId: string }): Task | undefined =>
+    tasks.find((t) => t.issueId === props.issueId),
+);
+
 export const selectTasksById = createSelector(
   selectTaskFeatureState,
   (state: TaskState, props: { ids: string[] }): Task[] =>
@@ -205,6 +214,12 @@ export const selectMainTasksWithoutTag = createSelector(
   selectAllTasks,
   (tasks: Task[], props: { tagId: string }): Task[] =>
     tasks.filter((task) => !task.parentId && !task.tagIds.includes(props.tagId)),
+);
+
+export const selectAllCalendarTaskEventIds = createSelector(
+  selectAllTasks,
+  (tasks: Task[]): string[] =>
+    tasks.filter((task) => task.issueType === 'CALENDAR').map((t) => t.issueId as string),
 );
 
 export const selectTasksWorkedOnOrDoneFlat = createSelector(

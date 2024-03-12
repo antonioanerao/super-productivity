@@ -4,21 +4,13 @@ import { LS } from '../../core/persistence/storage-keys.const';
 import { DOCUMENT } from '@angular/common';
 import { LocalUiHelperSettings } from './ui-helper.model';
 import { UI_LOCAL_HELPER_DEFAULT } from './ui-helper.const';
-import { ElectronService } from '../../core/electron/electron.service';
-import { IPC } from '../../../../electron/shared-with-frontend/ipc-events.const';
 import { IS_ELECTRON } from '../../app.constants';
 import { fromEvent } from 'rxjs';
 import { throttleTime } from 'rxjs/operators';
-import { ipcRenderer, webFrame } from 'electron';
 
 @Injectable({ providedIn: 'root' })
 export class UiHelperService {
-  private _webFrame: typeof webFrame = this._electronService.webFrame as typeof webFrame;
-
-  constructor(
-    @Inject(DOCUMENT) private _document: Document,
-    private _electronService: ElectronService,
-  ) {}
+  constructor(@Inject(DOCUMENT) private _document: Document) {}
 
   initElectron(): void {
     this._initMousewheelZoomForElectron();
@@ -30,7 +22,7 @@ export class UiHelperService {
       return;
     }
 
-    this._webFrame.setZoomFactor(zoomFactor);
+    window.ea.setZoomFactor(zoomFactor);
     this._updateLocalUiHelperSettings({ zoomFactor });
   }
 
@@ -39,10 +31,12 @@ export class UiHelperService {
       console.error('Invalid zoom factor', zoomBy);
       return;
     }
-    const currentZoom = this._webFrame.getZoomFactor();
+    const currentZoom = window.ea.getZoomFactor();
+    console.log({ currentZoom });
+
     const zoomFactor = currentZoom + zoomBy;
 
-    this._webFrame.setZoomFactor(zoomFactor);
+    window.ea.setZoomFactor(zoomFactor);
     this._updateLocalUiHelperSettings({ zoomFactor });
   }
 
@@ -53,7 +47,7 @@ export class UiHelperService {
         (document.activeElement as HTMLElement).blur();
       }
 
-      (this._electronService.ipcRenderer as typeof ipcRenderer).send(IPC.SHOW_OR_FOCUS);
+      window.ea.showOrFocus();
     } else {
       console.error('Cannot execute focus app window in browser');
     }
@@ -72,7 +66,7 @@ export class UiHelperService {
           // this does not prevent scrolling unfortunately
           // event.preventDefault();
 
-          let zoomFactor = this._webFrame.getZoomFactor();
+          let zoomFactor = window.ea.getZoomFactor();
           if (event.deltaY > 0) {
             zoomFactor -= ZOOM_DELTA;
           } else if (event.deltaY < 0) {

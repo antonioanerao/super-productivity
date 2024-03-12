@@ -46,13 +46,19 @@ export interface TaskArchive extends EntityState<ArchiveTask> {
 
 export type TimeSpentOnDay = Readonly<TimeSpentOnDayCopy>;
 
+export interface IssueTaskTimeTracked {
+  [key: string]: number;
+}
+
 export interface IssueFieldsForTask {
   // NOTE: keep in mind that the issueId is not unique (especially for github)
   issueId: string | null;
+  issueProviderId: string | null;
   issueType: IssueProviderKey | null;
   issueWasUpdated: boolean | null;
   issueLastUpdated: number | null;
   issueAttachmentNr: number | null;
+  issueTimeTracked: IssueTaskTimeTracked | null;
   issuePoints: number | null;
 }
 
@@ -144,11 +150,13 @@ export const DEFAULT_TASK: Task = {
   attachments: [],
 
   issueId: null,
+  issueProviderId: null,
   issuePoints: null,
   issueType: null,
   issueAttachmentNr: null,
   issueLastUpdated: null,
   issueWasUpdated: null,
+  issueTimeTracked: null,
 };
 
 export interface TaskState extends EntityState<Task> {

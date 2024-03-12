@@ -27,13 +27,11 @@ import {
 import { AllowedDBKeys } from '../../core/persistence/storage-keys.const';
 import { IdleService } from '../../features/idle/idle.service';
 import { IS_ELECTRON } from '../../app.constants';
-import { ElectronService } from '../../core/electron/electron.service';
-import { IpcRenderer } from 'electron';
-import { IPC } from '../../../../electron/shared-with-frontend/ipc-events.const';
 import { GlobalConfigState } from '../../features/config/global-config.model';
 import { IS_ANDROID_WEB_VIEW } from '../../util/is-android-web-view';
 import { androidInterface } from '../../features/android/android-interface';
-import { IS_TOUCH_ONLY } from '../../util/is-touch-only';
+import { ipcResume$, ipcSuspend$ } from '../../core/ipc-events';
+import { IS_TOUCH_PRIMARY } from '../../util/is-mouse-primary';
 
 const MAX_WAIT_FOR_INITIAL_SYNC = 25000;
 const USER_INTERACTION_SYNC_CHECK_THROTTLE_TIME = 15 * 60 * 10000;
@@ -78,7 +76,7 @@ export class SyncTriggerService {
           )
         : // FALLBACK we check if there was any kind of user interaction
         // (otherwise sync might never be checked if there are no local data changes)
-        IS_TOUCH_ONLY
+        IS_TOUCH_PRIMARY
         ? merge(
             fromEvent(window, 'touchstart'),
             fromEvent(window, 'visibilitychange'),
@@ -103,19 +101,20 @@ export class SyncTriggerService {
     ),
   );
 
+  // TODO check if those two work as expected
   private _onElectronResumeTrigger$: Observable<string | never> = IS_ELECTRON
-    ? fromEvent(this._electronService.ipcRenderer as IpcRenderer, IPC.RESUME).pipe(
+    ? ipcResume$.pipe(
+        // because ipcEvents live forever
         mapTo('I_IPC_RESUME'),
       )
     : EMPTY;
-
-  private _beforeGoingToSleepTriggers$: Observable<string> = merge(
-    IS_ELECTRON
-      ? fromEvent(this._electronService.ipcRenderer as IpcRenderer, IPC.SUSPEND).pipe(
-          mapTo('I_IPC_SUSPEND'),
-        )
-      : EMPTY,
-  ).pipe(throttleTime(SYNC_BEFORE_GOING_TO_SLEEP_THROTTLE_TIME));
+  private _beforeGoingToSleepTriggers$: Observable<string | never> = IS_ELECTRON
+    ? ipcSuspend$.pipe(
+        // because ipcEvents live forever
+        mapTo('I_IPC_SUSPEND'),
+        throttleTime(SYNC_BEFORE_GOING_TO_SLEEP_THROTTLE_TIME),
+      )
+    : EMPTY;
 
   private _isOnlineTrigger$: Observable<string> = isOnline$.pipe(
     // skip initial online which always fires on page load
@@ -160,7 +159,6 @@ export class SyncTriggerService {
     private readonly _dataInitService: DataInitService,
     private readonly _idleService: IdleService,
     private readonly _persistenceService: PersistenceService,
-    private readonly _electronService: ElectronService,
   ) {}
 
   getSyncTrigger$(

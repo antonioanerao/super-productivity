@@ -62,6 +62,14 @@ export class GitlabApiService {
     }
   }
 
+  private getCustomFilterParam(cfg: GitlabCfg): string {
+    if (cfg.filter) {
+      return `&${cfg.filter}`;
+    } else {
+      return '';
+    }
+  }
+
   getByIds$(
     project: string,
     ids: string[] | number[],
@@ -76,7 +84,7 @@ export class GitlabApiService {
       {
         url: `${this._apiLink(cfg, project)}/issues?${queryParams}${this.getScopeParam(
           cfg,
-        )}`,
+        )}${this.getCustomFilterParam(cfg)}`,
       },
       cfg,
     ).pipe(
@@ -115,7 +123,7 @@ export class GitlabApiService {
       {
         url: `${this._apiLink(cfg)}/issues?search=${searchText}${this.getScopeParam(
           cfg,
-        )}&order_by=updated_at`,
+        )}&order_by=updated_at${this.getCustomFilterParam(cfg)}`,
       },
       cfg,
     ).pipe(
@@ -156,7 +164,9 @@ export class GitlabApiService {
       {
         url: `${this._apiLink(
           cfg,
-        )}/issues?state=opened&order_by=updated_at&${this.getScopeParam(cfg)}`,
+        )}/issues?state=opened&order_by=updated_at&${this.getScopeParam(
+          cfg,
+        )}${this.getCustomFilterParam(cfg)}`,
       },
       cfg,
     ).pipe(take(1));
@@ -185,6 +195,54 @@ export class GitlabApiService {
       throwError('Gitlab Project URL');
     }
     return projectURL;
+  }
+
+  addTimeSpentToIssue$(
+    issueId: string,
+    // NOTE: duration format is without space, e.g.: 1h23m
+    duration: string,
+    cfg: GitlabCfg,
+  ): Observable<unknown> {
+    /* {
+    human_time_estimate: null | string;
+    human_total_time_spent: null | string;
+    time_estimate: null | number;
+    total_time_spent: null | number;
+  }*/
+    return this._sendRawRequest$(
+      {
+        url: `${this._apiLink(
+          cfg,
+          cfg.project || undefined,
+        )}/issues/${issueId}/add_spent_time`,
+        method: 'POST',
+        data: {
+          duration,
+          summary: 'Submitted via Super Productivity on ' + new Date(),
+        },
+      },
+      cfg,
+    );
+  }
+
+  getTimeTrackingStats$(
+    issueId: string,
+    cfg: GitlabCfg,
+  ): Observable<{
+    human_time_estimate: null | string;
+    human_total_time_spent: null | string;
+    time_estimate: null | number;
+    total_time_spent: null | number;
+  }> {
+    return this._sendRawRequest$(
+      {
+        url: `${this._apiLink(
+          cfg,
+          cfg.project || undefined,
+        )}/issues/${issueId}/time_stats`,
+      },
+      cfg,
+    ).pipe(map((res) => (res as any).body));
   }
 
   private _getIidFromIssue(issue: string | number): string {

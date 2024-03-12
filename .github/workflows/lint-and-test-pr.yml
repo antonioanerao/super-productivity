@@ -11,7 +11,7 @@ jobs:
         with:
           node-version: 16
       - name: Check out Git repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
       # work around for npm installs from git+https://github.com/johannesjo/J2M.git
@@ -24,7 +24,7 @@ jobs:
         id: npm-cache-dir
         run: |
           echo "::set-output name=dir::$(npm config get cache)"
-      - uses: actions/cache@v3
+      - uses: actions/cache@v4
         id: npm-cache # use this to check for `cache-hit` ==> if: steps.npm-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ steps.npm-cache-dir.outputs.dir }}

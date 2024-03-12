@@ -125,6 +125,13 @@ export const KEYBOARD_SETTINGS_FORM_CFG: ConfigFormSection<KeyboardConfig> = {
       },
     },
     {
+      key: 'goToFocusMode',
+      type: 'keyboard',
+      templateOptions: {
+        label: T.GCF.KEYBOARD.GO_TO_FOCUS_MODE,
+      },
+    },
+    {
       key: 'goToTimeline',
       type: 'keyboard',
       templateOptions: {
@@ -287,6 +294,20 @@ export const KEYBOARD_SETTINGS_FORM_CFG: ConfigFormSection<KeyboardConfig> = {
       type: 'keyboard',
       templateOptions: {
         label: T.GCF.KEYBOARD.MOVE_TASK_DOWN,
+      },
+    },
+    {
+      key: 'moveTaskToTop',
+      type: 'keyboard',
+      templateOptions: {
+        label: T.GCF.KEYBOARD.MOVE_TASK_TO_TOP,
+      },
+    },
+    {
+      key: 'moveTaskToBottom',
+      type: 'keyboard',
+      templateOptions: {
+        label: T.GCF.KEYBOARD.MOVE_TASK_TO_BOTTOM,
       },
     },
     {

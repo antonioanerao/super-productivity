@@ -1,13 +1,11 @@
 import { Injectable } from '@angular/core';
 import { createEffect } from '@ngrx/effects';
-import { fromEvent, Observable } from 'rxjs';
+import { Observable } from 'rxjs';
 import { IS_ELECTRON } from '../../app.constants';
-import { ElectronService } from './electron.service';
-import { IpcRenderer, shell } from 'electron';
-import { IPC } from '../../../../electron/shared-with-frontend/ipc-events.const';
 import { tap } from 'rxjs/operators';
 import { SnackService } from '../snack/snack.service';
 import { T } from '../../t.const';
+import { ipcAnyFileDownloaded$ } from '../ipc-events';
 
 @Injectable()
 export class ElectronEffects {
@@ -15,10 +13,7 @@ export class ElectronEffects {
     IS_ELECTRON &&
     createEffect(
       () =>
-        fromEvent(
-          this._electronService.ipcRenderer as IpcRenderer,
-          IPC.ANY_FILE_DOWNLOADED,
-        ).pipe(
+        ipcAnyFileDownloaded$.pipe(
           tap((args) => {
             const fileParam = (args as any)[1];
             const path = fileParam.path;
@@ -34,7 +29,7 @@ export class ElectronEffects {
               },
               actionStr: T.GLOBAL_SNACK.FILE_DOWNLOADED_BTN,
               actionFn: () => {
-                (this._electronService.shell as typeof shell).openPath(dir);
+                window.ea.openPath(dir);
               },
             });
           }),
@@ -42,8 +37,5 @@ export class ElectronEffects {
       { dispatch: false },
     );
 
-  constructor(
-    private _electronService: ElectronService,
-    private _snackService: SnackService,
-  ) {}
+  constructor(private _snackService: SnackService) {}
 }

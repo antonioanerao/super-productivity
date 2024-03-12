@@ -29,6 +29,11 @@ import { LayoutService } from '../layout/layout.service';
 import { TaskService } from '../../features/tasks/task.service';
 import { LS } from '../../core/persistence/storage-keys.const';
 import { TODAY_TAG } from '../../features/tag/tag.const';
+import { DialogTimelineSetupComponent } from '../../features/timeline/dialog-timeline-setup/dialog-timeline-setup.component';
+import { TourId } from '../../features/shepherd/shepherd-steps.const';
+import { ShepherdService } from '../../features/shepherd/shepherd.service';
+import { getGithubErrorUrl } from 'src/app/core/error-handler/global-error-handler.util';
+import { IS_MOUSE_PRIMARY } from '../../util/is-mouse-primary';
 
 @Component({
   selector: 'side-nav',
@@ -39,6 +44,7 @@ import { TODAY_TAG } from '../../features/tag/tag.const';
 })
 export class SideNavComponent implements OnDestroy {
   @ViewChildren('menuEntry') navEntries?: QueryList<MatMenuItem>;
+  IS_MOUSE_PRIMARY = IS_MOUSE_PRIMARY;
   keyboardFocusTimeout?: number;
   @ViewChild('projectExpandBtn', { read: ElementRef }) projectExpandBtn?: ElementRef;
   isProjectsExpanded: boolean = this.fetchProjectListState();
@@ -75,8 +81,10 @@ export class SideNavComponent implements OnDestroy {
   readonly TAG_SIDE_NAV: string = 'TAG_SIDE_NAV';
   activeWorkContextId?: string | null;
   WorkContextType: typeof WorkContextType = WorkContextType;
+  TourId: typeof TourId = TourId;
   private keyManager?: FocusKeyManager<MatMenuItem>;
   private _subs: Subscription = new Subscription();
+  private _cachedIssueUrl?: string;
 
   constructor(
     public readonly tagService: TagService,
@@ -86,6 +94,7 @@ export class SideNavComponent implements OnDestroy {
     private readonly _layoutService: LayoutService,
     private readonly _taskService: TaskService,
     private readonly _dragulaService: DragulaService,
+    private readonly _shepherdService: ShepherdService,
   ) {
     this._dragulaService.createGroup(this.PROJECTS_SIDE_NAV, {
       direction: 'vertical',
@@ -251,5 +260,20 @@ export class SideNavComponent implements OnDestroy {
         this.keyManager?.setActiveItem(targetIndex);
       }
     }
+  }
+
+  openTimelineSettings(): void {
+    this._matDialog.open(DialogTimelineSetupComponent);
+  }
+
+  startTour(id: TourId): void {
+    this._shepherdService.show(id);
+  }
+
+  getGithubErrorUrl(): string {
+    if (!this._cachedIssueUrl) {
+      this._cachedIssueUrl = getGithubErrorUrl('', undefined, true);
+    }
+    return this._cachedIssueUrl;
   }
 }

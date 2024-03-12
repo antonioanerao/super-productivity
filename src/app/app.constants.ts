@@ -47,6 +47,7 @@ export const ALL_THEMES: string[] = [
 export enum LanguageCode {
   ar = 'ar',
   de = 'de',
+  cz = 'cz',
   en = 'en',
   es = 'es',
   fa = 'fa',
@@ -70,6 +71,7 @@ export enum LanguageCode {
 export enum LanguageCodeMomentMap {
   ar = 'ar',
   de = 'de',
+  cz = 'cz',
   en = 'en',
   es = 'es',
   fa = 'fa',
@@ -101,6 +103,9 @@ export enum BodyClass {
   isNoAdvancedFeatures = 'isNoAdvancedFeatures',
   isTouchOnly = 'isTouchOnly',
   isNoTouchOnly = 'isNoTouchOnly',
+
+  isTouchPrimary = 'isTouchPrimary',
+  isMousePrimary = 'isMousePrimary',
   isLightTheme = 'isLightTheme',
   isDarkTheme = 'isDarkTheme',
   isDisableBackgroundGradient = 'isDisableBackgroundGradient',

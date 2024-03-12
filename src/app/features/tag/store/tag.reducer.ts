@@ -5,9 +5,9 @@ import { createFeatureSelector, createReducer, createSelector, on } from '@ngrx/
 import {
   addTask,
   convertToMainTask,
-  deleteTasks,
   deleteTask,
-  moveToArchive,
+  deleteTasks,
+  moveToArchive_,
   restoreTask,
   updateTaskTags,
 } from '../../tasks/store/task.actions';
@@ -16,10 +16,17 @@ import { WorkContextType } from '../../work-context/work-context.model';
 import {
   moveTaskDownInTodayList,
   moveTaskInTodayList,
+  moveTaskToBottomInTodayList,
+  moveTaskToTopInTodayList,
   moveTaskUpInTodayList,
 } from '../../work-context/store/work-context-meta.actions';
 import { moveTaskForWorkContextLikeState } from '../../work-context/store/work-context-meta.helper';
-import { arrayMoveLeftUntil, arrayMoveRightUntil } from '../../../util/array-move';
+import {
+  arrayMoveLeftUntil,
+  arrayMoveRightUntil,
+  arrayMoveToEnd,
+  arrayMoveToStart,
+} from '../../../util/array-move';
 import { Update } from '@ngrx/entity/src/models';
 import { unique } from '../../../util/unique';
 import { loadAllData } from '../../../root-store/meta/load-all-data.action';
@@ -175,6 +182,40 @@ export const tagReducer = createReducer<TagState>(
         : state,
   ),
 
+  on(moveTaskToTopInTodayList, (state, { taskId, workContextType, workContextId }) => {
+    return workContextType === WORK_CONTEXT_TYPE
+      ? tagAdapter.updateOne(
+          {
+            id: workContextId,
+            changes: {
+              taskIds: arrayMoveToStart(
+                (state.entities[workContextId] as Tag).taskIds,
+                taskId,
+              ),
+            },
+          },
+          state,
+        )
+      : state;
+  }),
+
+  on(moveTaskToBottomInTodayList, (state, { taskId, workContextType, workContextId }) => {
+    return workContextType === WORK_CONTEXT_TYPE
+      ? tagAdapter.updateOne(
+          {
+            id: workContextId,
+            changes: {
+              taskIds: arrayMoveToEnd(
+                (state.entities[workContextId] as Tag).taskIds,
+                taskId,
+              ),
+            },
+          },
+          state,
+        )
+      : state;
+  }),
+
   // INTERNAL
   // --------
   on(tagActions.addTag, (state: TagState, { tag }) => tagAdapter.addOne(tag, state)),
@@ -314,7 +355,7 @@ export const tagReducer = createReducer<TagState>(
     return tagAdapter.updateMany(updates, state);
   }),
 
-  on(moveToArchive, (state, { tasks }) => {
+  on(moveToArchive_, (state, { tasks }) => {
     const taskIdsToMoveToArchive = tasks.map((t) => t.id);
     const tagIds = unique(
       tasks.reduce((acc: string[], t: TaskWithSubTasks) => [...acc, ...t.tagIds], []),

@@ -20,14 +20,13 @@ import { warpRouteAnimation } from './ui/animations/warp-route';
 import { combineLatest, Observable, Subscription } from 'rxjs';
 import { fadeAnimation } from './ui/animations/fade.ani';
 import { BannerService } from './core/banner/banner.service';
-import { SS } from './core/persistence/storage-keys.const';
+import { LS } from './core/persistence/storage-keys.const';
 import { BannerId } from './core/banner/banner.model';
 import { T } from './t.const';
 import { TranslateService } from '@ngx-translate/core';
 import { GlobalThemeService } from './core/theme/global-theme.service';
 import { UiHelperService } from './features/ui-helper/ui-helper.service';
 import { LanguageService } from './core/language/language.service';
-import { ElectronService } from './core/electron/electron.service';
 import { WorkContextService } from './features/work-context/work-context.service';
 import { ImexMetaService } from './imex/imex-meta/imex-meta.service';
 import { AndroidService } from './features/android/android.service';
@@ -36,10 +35,12 @@ import { isOnline$ } from './util/is-online';
 import { SyncTriggerService } from './imex/sync/sync-trigger.service';
 import { environment } from '../environments/environment';
 import { ActivatedRoute, RouterOutlet } from '@angular/router';
-import { ipcRenderer } from 'electron';
 import { TrackingReminderService } from './features/tracking-reminder/tracking-reminder.service';
 import { first, map, skip, take } from 'rxjs/operators';
 import { IS_MOBILE } from './util/is-mobile';
+import { FocusModeService } from './features/focus-mode/focus-mode.service';
+import { warpAnimation, warpInAnimation } from './ui/animations/warp.ani';
+import { GlobalConfigState } from './features/config/global-config.model';
 
 const w = window as any;
 const productivityTip: string[] = w.productivityTips && w.productivityTips[w.randomIndex];
@@ -48,7 +49,13 @@ const productivityTip: string[] = w.productivityTips && w.productivityTips[w.ran
   selector: 'app-root',
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.scss'],
-  animations: [expandAnimation, warpRouteAnimation, fadeAnimation],
+  animations: [
+    expandAnimation,
+    warpRouteAnimation,
+    fadeAnimation,
+    warpAnimation,
+    warpInAnimation,
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class AppComponent implements OnDestroy {
@@ -79,7 +86,6 @@ export class AppComponent implements OnDestroy {
     private _globalConfigService: GlobalConfigService,
     private _shortcutService: ShortcutService,
     private _bannerService: BannerService,
-    private _electronService: ElectronService,
     private _snackService: SnackService,
     private _chromeExtensionInterfaceService: ChromeExtensionInterfaceService,
     private _translateService: TranslateService,
@@ -94,8 +100,21 @@ export class AppComponent implements OnDestroy {
     public readonly imexMetaService: ImexMetaService,
     public readonly workContextService: WorkContextService,
     public readonly layoutService: LayoutService,
+    public readonly focusModeService: FocusModeService,
     public readonly globalThemeService: GlobalThemeService,
   ) {
+    this._snackService.open({
+      ico: 'lightbulb',
+      config: {
+        duration: 7000,
+      },
+      msg:
+        '<strong>' +
+        (window as any).productivityTips[(window as any).randomIndex][0] +
+        ':</strong> ' +
+        (window as any).productivityTips[(window as any).randomIndex][1],
+    });
+
     this._subs = this._languageService.isLangRTL.subscribe((val) => {
       this.isRTL = val;
       document.dir = this.isRTL ? 'rtl' : 'ltr';
@@ -139,19 +158,15 @@ export class AppComponent implements OnDestroy {
     });
 
     if (IS_ELECTRON) {
-      (this._electronService.ipcRenderer as typeof ipcRenderer).send(IPC.APP_READY);
+      window.ea.informAboutAppReady();
       this._initElectronErrorHandler();
       this._uiHelperService.initElectron();
 
-      (this._electronService.ipcRenderer as typeof ipcRenderer).on(
-        IPC.TRANSFER_SETTINGS_REQUESTED,
-        () => {
-          (this._electronService.ipcRenderer as typeof ipcRenderer).send(
-            IPC.TRANSFER_SETTINGS_TO_ELECTRON,
-            this._globalConfigService.cfg,
-          );
-        },
-      );
+      window.ea.on(IPC.TRANSFER_SETTINGS_REQUESTED, () => {
+        window.ea.sendAppSettingsToElectron(
+          this._globalConfigService.cfg as GlobalConfigState,
+        );
+      });
     } else {
       // WEB VERSION
       this._chromeExtensionInterfaceService.init();
@@ -194,29 +209,31 @@ export class AppComponent implements OnDestroy {
   @HostListener('window:beforeinstallprompt', ['$event']) onBeforeInstallPrompt(
     e: any,
   ): void {
-    if (IS_ELECTRON || sessionStorage.getItem(SS.WEB_APP_INSTALL)) {
+    if (IS_ELECTRON || localStorage.getItem(LS.WEB_APP_INSTALL)) {
       return;
     }
 
     // Prevent Chrome 67 and earlier from automatically showing the prompt
     e.preventDefault();
 
-    this._bannerService.open({
-      id: BannerId.InstallWebApp,
-      msg: T.APP.B_INSTALL.MSG,
-      action: {
-        label: T.APP.B_INSTALL.INSTALL,
-        fn: () => {
-          e.prompt();
+    window.setTimeout(() => {
+      this._bannerService.open({
+        id: BannerId.InstallWebApp,
+        msg: T.APP.B_INSTALL.MSG,
+        action: {
+          label: T.APP.B_INSTALL.INSTALL,
+          fn: () => {
+            e.prompt();
+          },
         },
-      },
-      action2: {
-        label: T.APP.B_INSTALL.IGNORE,
-        fn: () => {
-          sessionStorage.setItem(SS.WEB_APP_INSTALL, 'true');
+        action2: {
+          label: T.APP.B_INSTALL.IGNORE,
+          fn: () => {
+            localStorage.setItem(LS.WEB_APP_INSTALL, 'true');
+          },
         },
-      },
-    });
+      });
+    }, 2 * 60 * 1000);
   }
 
   getPage(outlet: RouterOutlet): string {
@@ -229,7 +246,7 @@ export class AppComponent implements OnDestroy {
   }
 
   private _initElectronErrorHandler(): void {
-    (this._electronService.ipcRenderer as typeof ipcRenderer).on(
+    window.ea.on(
       IPC.ERROR,
       (
         ev,

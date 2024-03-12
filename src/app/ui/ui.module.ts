@@ -94,6 +94,8 @@ import { RoundDurationPipe } from './pipes/round-duration.pipe';
 import { ShortPlannedAtPipe } from './pipes/short-planned-at.pipe';
 import { LongPressIOSDirective } from './longpress/longpress-ios.directive';
 import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { ProgressCircleComponent } from './progress-circle/progress-circle.component';
+import { FormlyLinkWidgetComponent } from './formly-link-widget/formly-link-widget.component';
 
 const DIALOG_COMPONENTS = [
   DialogConfirmComponent,
@@ -130,6 +132,7 @@ const COMPONENT_AND_PIPES = [
   MsToStringPipe,
   NumberToMonthPipe,
   ProgressBarComponent,
+  ProgressCircleComponent,
   SimpleDownloadDirective,
   StringToMsPipe,
   ThemeSelectComponent,
@@ -186,10 +189,17 @@ const OTHER_3RD_PARTY_MODS_WITHOUT_CFG = [
         provide: MarkedOptions,
         useFactory: (): MarkedOptions => {
           const renderer = new MarkedRenderer();
-          renderer.listitem = (text: string) =>
-            /<input.+type="checkbox"/.test(text)
-              ? '<li style="list-style: none;">' + text + '</li>'
+
+          renderer.checkbox = (isChecked: boolean) => {
+            return `<span class="checkbox material-icons">${
+              isChecked ? 'check_box ' : 'check_box_outline_blank '
+            }</span>`;
+          };
+          renderer.listitem = (text: string) => {
+            return text.includes('checkbox')
+              ? '<li class="checkbox-wrapper">' + text + '</li>'
               : '<li>' + text + '</li>';
+          };
           return {
             renderer: renderer,
             gfm: true,
@@ -200,12 +210,13 @@ const OTHER_3RD_PARTY_MODS_WITHOUT_CFG = [
           };
         },
       },
-      sanitize: SecurityContext.NONE,
+      sanitize: SecurityContext.HTML,
     }),
     FormsModule,
     ReactiveFormsModule,
     FormlyModule.forChild({
       types: [
+        { name: 'link', component: FormlyLinkWidgetComponent },
         {
           name: 'duration',
           component: InputDurationFormlyComponent,
@@ -233,7 +244,7 @@ const OTHER_3RD_PARTY_MODS_WITHOUT_CFG = [
     ValidationModule,
     BetterDrawerModule,
   ],
-  declarations: [...COMPONENT_AND_PIPES, OwlWrapperComponent],
+  declarations: [...COMPONENT_AND_PIPES, OwlWrapperComponent, FormlyLinkWidgetComponent],
   exports: [
     ...COMPONENT_AND_PIPES,
     ...MAT_MODULES,

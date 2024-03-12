@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@angular/core';
 import { BodyClass, IS_ELECTRON } from '../../app.constants';
 import { IS_MAC } from '../../util/is-mac';
-import { distinctUntilChanged, map, take } from 'rxjs/operators';
+import { distinctUntilChanged, map, startWith, switchMap, take } from 'rxjs/operators';
 import { IS_TOUCH_ONLY } from '../../util/is-touch-only';
 import { MaterialCssVarsService } from 'angular-material-css-vars';
 import { DOCUMENT } from '@angular/common';
@@ -10,31 +10,32 @@ import { DomSanitizer } from '@angular/platform-browser';
 import { ChromeExtensionInterfaceService } from '../chrome-extension-interface/chrome-extension-interface.service';
 import { ThemeService as NgChartThemeService } from 'ng2-charts';
 import { GlobalConfigService } from '../../features/config/global-config.service';
-import { ElectronService } from '../electron/electron.service';
 import { WorkContextThemeCfg } from '../../features/work-context/work-context.model';
 import { WorkContextService } from '../../features/work-context/work-context.service';
-import { combineLatest, Observable } from 'rxjs';
+import { combineLatest, fromEvent, Observable, of } from 'rxjs';
 import { IS_FIREFOX } from '../../util/is-firefox';
 import { ImexMetaService } from '../../imex/imex-meta/imex-meta.service';
+import { IS_MOUSE_PRIMARY, IS_TOUCH_PRIMARY } from '../../util/is-mouse-primary';
 
 @Injectable({ providedIn: 'root' })
 export class GlobalThemeService {
-  isDarkTheme$: Observable<boolean> =
-    IS_ELECTRON && this._electronService.isMacOS
-      ? new Observable((subscriber) => {
-          subscriber.next(this._electronService.remote.nativeTheme.shouldUseDarkColors);
-          this._electronService.remote.systemPreferences.subscribeNotification(
-            'AppleInterfaceThemeChangedNotification',
-            () =>
-              subscriber.next(
-                this._electronService.remote.nativeTheme.shouldUseDarkColors,
-              ),
+  isDarkTheme$: Observable<boolean> = this._globalConfigService.misc$.pipe(
+    switchMap((cfg) => {
+      switch (cfg.darkMode) {
+        case 'dark':
+          return of(true);
+        case 'light':
+          return of(false);
+        default:
+          const darkModePreference = window.matchMedia('(prefers-color-scheme: dark)');
+          return fromEvent(darkModePreference, 'change').pipe(
+            map((e: any) => e.matches),
+            startWith(darkModePreference.matches),
           );
-        })
-      : this._globalConfigService.misc$.pipe(
-          map((cfg) => cfg.isDarkMode),
-          distinctUntilChanged(),
-        );
+      }
+    }),
+    distinctUntilChanged(),
+  );
 
   backgroundImg$: Observable<string | null> = combineLatest([
     this._workContextService.currentTheme$,
@@ -49,7 +50,6 @@ export class GlobalThemeService {
   constructor(
     @Inject(DOCUMENT) private document: Document,
     private _materialCssVarsService: MaterialCssVarsService,
-    private _electronService: ElectronService,
     private _workContextService: WorkContextService,
     private _globalConfigService: GlobalConfigService,
     private _matIconRegistry: MatIconRegistry,
@@ -115,6 +115,7 @@ export class GlobalThemeService {
       ['repeat', 'assets/icons/repeat.svg'],
       ['gitea', 'assets/icons/gitea.svg'],
       ['redmine', 'assets/icons/redmine.svg'],
+      ['calendar', 'assets/icons/calendar.svg'],
     ];
 
     icons.forEach(([name, path]) => {
@@ -182,6 +183,12 @@ export class GlobalThemeService {
       this.document.body.classList.add(BodyClass.isTouchOnly);
     } else {
       this.document.body.classList.add(BodyClass.isNoTouchOnly);
+    }
+
+    if (IS_MOUSE_PRIMARY) {
+      this.document.body.classList.add(BodyClass.isMousePrimary);
+    } else if (IS_TOUCH_PRIMARY) {
+      this.document.body.classList.add(BodyClass.isTouchPrimary);
     }
   }
 

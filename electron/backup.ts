@@ -1,4 +1,4 @@
-import { app, ipcMain } from 'electron';
+import { app, ipcMain, IpcMainEvent } from 'electron';
 import {
   existsSync,
   mkdirSync,
@@ -8,17 +8,15 @@ import {
   writeFileSync,
 } from 'fs';
 import { IPC } from './shared-with-frontend/ipc-events.const';
-import { answerRenderer } from './better-ipc';
 import { LocalBackupMeta } from '../src/app/imex/local-backup/local-backup.model';
 import * as path from 'path';
-import { error, log } from 'electron-log';
+import { error, log } from 'electron-log/main';
 import { AppDataComplete } from '../src/app/imex/sync/sync.model';
 
-let BACKUP_DIR = `${app.getPath('userData')}/backups`;
+export const BACKUP_DIR = path.join(app.getPath('userData'), `backups`);
 
 // eslint-disable-next-line prefer-arrow/prefer-arrow-functions
-export function initBackupAdapter(backupDir: string): void {
-  BACKUP_DIR = backupDir;
+export function initBackupAdapter(): void {
   console.log('Saving backups to', BACKUP_DIR);
   log('Saving backups to', BACKUP_DIR);
 
@@ -26,7 +24,7 @@ export function initBackupAdapter(backupDir: string): void {
   ipcMain.on(IPC.BACKUP, backupData);
 
   // IS_BACKUP_AVAILABLE
-  answerRenderer(IPC.BACKUP_IS_AVAILABLE, (): LocalBackupMeta | false => {
+  ipcMain.handle(IPC.BACKUP_IS_AVAILABLE, (): LocalBackupMeta | false => {
     if (!existsSync(BACKUP_DIR)) {
       return false;
     }
@@ -53,14 +51,14 @@ export function initBackupAdapter(backupDir: string): void {
   });
 
   // RESTORE_BACKUP
-  answerRenderer(IPC.BACKUP_LOAD_DATA, (backupPath: string): string => {
+  ipcMain.handle(IPC.BACKUP_LOAD_DATA, (ev, backupPath: string): string => {
     log('Reading backup file: ', backupPath);
     return readFileSync(backupPath, { encoding: 'utf8' });
   });
 }
 
 // eslint-disable-next-line prefer-arrow/prefer-arrow-functions
-function backupData(ev: Event, data: AppDataComplete): void {
+function backupData(ev: IpcMainEvent, data: AppDataComplete): void {
   if (!existsSync(BACKUP_DIR)) {
     mkdirSync(BACKUP_DIR);
   }

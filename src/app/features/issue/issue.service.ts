@@ -9,8 +9,8 @@ import { TaskAttachment } from '../tasks/task-attachment/task-attachment.model';
 import { from, merge, Observable, of, Subject, zip } from 'rxjs';
 import {
   CALDAV_TYPE,
+  CALENDAR_TYPE,
   GITEA_TYPE,
-  REDMINE_TYPE,
   GITHUB_TYPE,
   GITLAB_TYPE,
   ISSUE_PROVIDER_HUMANIZED,
@@ -18,6 +18,7 @@ import {
   ISSUE_STR_MAP,
   JIRA_TYPE,
   OPEN_PROJECT_TYPE,
+  REDMINE_TYPE,
 } from './issue.const';
 import { TaskService } from '../tasks/task.service';
 import { Task } from '../tasks/task.model';
@@ -33,6 +34,7 @@ import { RedmineCommonInterfacesService } from './providers/redmine/redmine-comm
 import { SnackService } from '../../core/snack/snack.service';
 import { T } from '../../t.const';
 import { TranslateService } from '@ngx-translate/core';
+import { CalendarCommonInterfacesService } from './providers/calendar/calendar-common-interfaces.service';
 
 @Injectable({
   providedIn: 'root',
@@ -46,6 +48,7 @@ export class IssueService {
     [OPEN_PROJECT_TYPE]: this._openProjectInterfaceService,
     [GITEA_TYPE]: this._giteaInterfaceService,
     [REDMINE_TYPE]: this._redmineInterfaceService,
+    [CALENDAR_TYPE]: this._calendarCommonInterfaceService,
   };
 
   // NOTE: in theory we might need to clean this up on project change, but it's unlikely to matter
@@ -58,6 +61,7 @@ export class IssueService {
     [OPEN_PROJECT_TYPE]: {},
     [GITEA_TYPE]: {},
     [REDMINE_TYPE]: {},
+    [CALENDAR_TYPE]: {},
   };
 
   constructor(
@@ -69,6 +73,7 @@ export class IssueService {
     private _openProjectInterfaceService: OpenProjectCommonInterfacesService,
     private _giteaInterfaceService: GiteaCommonInterfacesService,
     private _redmineInterfaceService: RedmineCommonInterfacesService,
+    private _calendarCommonInterfaceService: CalendarCommonInterfacesService,
     private _snackService: SnackService,
     private _translateService: TranslateService,
   ) {}
@@ -255,7 +260,7 @@ export class IssueService {
   async refreshIssueTasks(tasks: Task[]): Promise<void> {
     // dynamic map that has a list of tasks for every entry where the entry is an issue type
     const tasksIssueIdsByIssueProviderKey: any = {};
-    const tasksWithoutIssueId = [];
+    const tasksWithoutIssueId: Readonly<Task>[] = [];
 
     for (const task of tasks) {
       if (!task.issueId || !task.issueType) {

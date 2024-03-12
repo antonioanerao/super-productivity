@@ -5,11 +5,8 @@ import { select, Store } from '@ngrx/store';
 import { filter, tap, withLatestFrom } from 'rxjs/operators';
 import { selectCurrentTask } from './task.selectors';
 import { Observable } from 'rxjs';
-import { IPC } from '../../../../../electron/shared-with-frontend/ipc-events.const';
 import { IS_ELECTRON } from '../../../app.constants';
 import { GlobalConfigService } from '../../config/global-config.service';
-import { ElectronService } from '../../../core/electron/electron.service';
-import { ipcRenderer } from 'electron';
 
 // TODO send message to electron when current task changes here
 
@@ -22,36 +19,30 @@ export class TaskElectronEffects {
         withLatestFrom(this._store$.pipe(select(selectCurrentTask))),
         tap(([action, current]) => {
           if (IS_ELECTRON) {
-            (this._electronService.ipcRenderer as typeof ipcRenderer).send(
-              IPC.CURRENT_TASK_UPDATED,
-              {
-                current,
-              },
-            );
+            window.ea.updateCurrentTask(current);
           }
         }),
       ),
     { dispatch: false },
   );
 
-  setTaskBarNoProgress$: Observable<any> = createEffect(
-    () =>
-      this._actions$.pipe(
-        ofType(setCurrentTask),
-        filter(() => IS_ELECTRON),
-        tap(({ id }) => {
-          if (!id) {
-            (this._electronService.ipcRenderer as typeof ipcRenderer).send(
-              IPC.SET_PROGRESS_BAR,
-              {
+  setTaskBarNoProgress$ =
+    IS_ELECTRON &&
+    createEffect(
+      () =>
+        this._actions$.pipe(
+          ofType(setCurrentTask),
+          tap(({ id }) => {
+            if (!id) {
+              window.ea.setProgressBar({
                 progress: 0,
-              },
-            );
-          }
-        }),
-      ),
-    { dispatch: false },
-  );
+                progressBarMode: 'pause',
+              });
+            }
+          }),
+        ),
+      { dispatch: false },
+    );
 
   setTaskBarProgress$: Observable<any> = createEffect(
     () =>
@@ -63,12 +54,10 @@ export class TaskElectronEffects {
         filter(([a, cfg]) => !cfg || !cfg.pomodoro.isEnabled),
         tap(([{ task }]) => {
           const progress = task.timeSpent / task.timeEstimate;
-          (this._electronService.ipcRenderer as typeof ipcRenderer).send(
-            IPC.SET_PROGRESS_BAR,
-            {
-              progress,
-            },
-          );
+          window.ea.setProgressBar({
+            progress,
+            progressBarMode: 'normal',
+          });
         }),
       ),
     { dispatch: false },
@@ -78,6 +67,5 @@ export class TaskElectronEffects {
     private _actions$: Actions,
     private _store$: Store<any>,
     private _configService: GlobalConfigService,
-    private _electronService: ElectronService,
   ) {}
 }

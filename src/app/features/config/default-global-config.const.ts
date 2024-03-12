@@ -1,10 +1,5 @@
 import { GlobalConfigState } from './global-config.model';
-import { IS_MAC } from '../../util/is-mac';
-
-export const IS_USE_DARK_THEME_AS_DEFAULT: boolean =
-  !IS_MAC ||
-  !window.matchMedia ||
-  window.matchMedia('(prefers-color-scheme: dark)').matches;
+import { DEFAULT_PROJECT_ID } from '../project/project.const';
 
 const minute = 60 * 1000;
 
@@ -14,17 +9,17 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfigState = {
     lng: null,
   },
   misc: {
-    isDarkMode: IS_USE_DARK_THEME_AS_DEFAULT,
+    darkMode: 'system',
     isConfirmBeforeExit: false,
     isConfirmBeforeExitWithoutFinishDay: true,
     isNotifyWhenTimeEstimateExceeded: true,
     isAutMarkParentAsDone: false,
-    isAutoStartNextTask: true,
+    isAutoStartNextTask: false,
     isTurnOffMarkdown: false,
     isAutoAddWorkedOnToToday: true,
     isMinimizeToTray: false,
     isTrayShowCurrentTask: true,
-    defaultProjectId: null,
+    defaultProjectId: DEFAULT_PROJECT_ID,
     firstDayOfWeek: 1,
     startOfNextDay: 0,
     isDisableAnimations: false,
@@ -61,7 +56,11 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfigState = {
     isEnabled: false,
     interval: 5 * minute,
     volume: 75,
-    text: 'Your current task is: ${taskTitle}',
+    text: 'Your current task is: ${currentTaskTitle}',
+  },
+  focusMode: {
+    isAlwaysUseFocusMode: false,
+    isSkipPreparation: false,
   },
   pomodoro: {
     isEnabled: false,
@@ -91,6 +90,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfigState = {
     showSearchBar: 'Shift+F',
     toggleBookmarks: 'Shift+V',
     toggleBacklog: 'b',
+    goToFocusMode: 'f',
     goToWorkView: 'w',
     goToScheduledView: 'Shift+S',
     goToTimeline: 'Shift+T',
@@ -113,6 +113,8 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfigState = {
     selectNextTask: 'j',
     moveTaskUp: 'Ctrl+Shift+ArrowUp',
     moveTaskDown: 'Ctrl+Shift+ArrowDown',
+    moveTaskToTop: 'Ctrl+Alt+ArrowUp',
+    moveTaskToBottom: 'Ctrl+Alt+ArrowDown',
     moveToBacklog: 'Shift+B',
     moveToTodaysTasks: 'Shift+T',
     expandSubTasks: null,
@@ -134,17 +136,25 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfigState = {
     isShowOnMobile: false,
     minTime: minute * 2,
   },
+  calendarIntegration: {
+    calendarProviders: [],
+  },
+  reminder: {
+    isCountdownBannerEnabled: true,
+    countdownDuration: minute * 5,
+  },
   timeline: {
     isWorkStartEndEnabled: true,
     workStart: DEFAULT_DAY_START,
     workEnd: '17:00',
-    calendarProviders: [],
   },
 
   sync: {
     isEnabled: false,
     // TODO maybe enable later if it works well
     isCompressionEnabled: false,
+    isEncryptionEnabled: false,
+    encryptionPassword: null,
     syncProvider: null,
     syncInterval: minute,
 

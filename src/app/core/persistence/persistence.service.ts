@@ -20,7 +20,6 @@ import {
 } from '../../imex/sync/sync.model';
 import { Reminder } from '../../features/reminder/reminder.model';
 import { DatabaseService } from './database.service';
-import { DEFAULT_PROJECT_ID } from '../../features/project/project.const';
 import {
   ExportedProject,
   ProjectArchive,
@@ -53,7 +52,6 @@ import { Bookmark, BookmarkState } from '../../features/bookmark/bookmark.model'
 import { Note, NoteState } from '../../features/note/note.model';
 import { Action, Store } from '@ngrx/store';
 import { Tag, TagState } from '../../features/tag/tag.model';
-import { environment } from '../../../environments/environment';
 import { checkFixEntityStateConsistency } from '../../util/check-fix-entity-state-consistency';
 import {
   SimpleCounter,
@@ -293,9 +291,9 @@ export class PersistenceService {
   // BACKUP AND SYNC RELATED
   // -----------------------
   updateLastLocalSyncModelChange(date: number = Date.now()): void {
-    if (!environment || !environment.production) {
-      console.log('Save Last Local Sync Model Change', date);
-    }
+    // if (!environment || !environment.production) {
+    //   console.log('Save Last Local Sync Model Change', date);
+    // }
     localStorage.setItem(LS.LAST_LOCAL_SYNC_MODEL_CHANGE, date.toString());
   }
 
@@ -338,7 +336,7 @@ export class PersistenceService {
     console.log('LOAD COMPLETE', isMigrate);
 
     const projectState = await this.project.loadState();
-    const pids = projectState ? (projectState.ids as string[]) : [DEFAULT_PROJECT_ID];
+    const pids = projectState ? (projectState.ids as string[]) : [];
     if (!pids) {
       throw new Error('Project State is broken');
     }
@@ -428,12 +426,18 @@ export class PersistenceService {
   }: PersistenceBaseModelCfg<T>): PersistenceBaseModel<T> {
     const model = {
       appDataKey,
-      loadState: (isSkipMigrate = false) =>
-        isSkipMigrate
-          ? this._loadFromDb({ dbKey: appDataKey, legacyDBKey: legacyKey })
-          : this._loadFromDb({ dbKey: appDataKey, legacyDBKey: legacyKey }).then(
-              migrateFn,
-            ),
+      loadState: async (isSkipMigrate = false) => {
+        const modelData = await this._loadFromDb({
+          dbKey: appDataKey,
+          legacyDBKey: legacyKey,
+        });
+        return modelData
+          ? isSkipMigrate
+            ? modelData
+            : migrateFn(modelData)
+          : // we want to be sure there is always a valid value returned
+            DEFAULT_APP_BASE_DATA[appDataKey];
+      },
       // In case we want to check on load
       // loadState: async (isSkipMigrate = false) => {
       //   const data = isSkipMigrate

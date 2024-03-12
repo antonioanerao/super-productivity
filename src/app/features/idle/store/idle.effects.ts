@@ -2,7 +2,6 @@ import { Injectable } from '@angular/core';
 import { Actions, createEffect, ofType } from '@ngrx/effects';
 import { ChromeExtensionInterfaceService } from '../../../core/chrome-extension-interface/chrome-extension-interface.service';
 import { WorkContextService } from '../../work-context/work-context.service';
-import { ElectronService } from '../../../core/electron/electron.service';
 import { TaskService } from '../../tasks/task.service';
 import { GlobalConfigService } from '../../config/global-config.service';
 import { MatDialog } from '@angular/material/dialog';
@@ -29,8 +28,7 @@ import {
   withLatestFrom,
 } from 'rxjs/operators';
 import { lazySetInterval } from '../../../../../electron/shared-with-frontend/lazy-set-interval';
-import { EMPTY, fromEvent, iif, Observable, of } from 'rxjs';
-import { IpcRenderer } from 'electron';
+import { EMPTY, iif, Observable, of } from 'rxjs';
 import { IPC } from '../../../../../electron/shared-with-frontend/ipc-events.const';
 import { SimpleCounterService } from '../../simple-counter/simple-counter.service';
 import { selectIdleTime, selectIsIdle } from './idle.selectors';
@@ -49,6 +47,7 @@ import { isNotNullOrUndefined } from '../../../util/is-not-null-or-undefined';
 import { DialogConfirmComponent } from '../../../ui/dialog-confirm/dialog-confirm.component';
 import { T } from '../../../t.const';
 import { DateService } from 'src/app/core/date/date.service';
+import { ipcIdleTime$ } from '../../../core/ipc-events';
 
 const DEFAULT_MIN_IDLE_TIME = 60000;
 const IDLE_POLL_INTERVAL = 1000;
@@ -59,10 +58,12 @@ export class IdleEffects {
   private _clearIdlePollInterval?: () => void;
   private _isDialogOpen: boolean = false;
 
+  // NOTE: needs to live forever since we can't unsubscribe from ipcEvent$
+  // TODO check if this works as expected
+  private _electronIdleTime$: Observable<number> = IS_ELECTRON ? ipcIdleTime$ : EMPTY;
+
   private _triggerIdleApis$ = IS_ELECTRON
-    ? fromEvent(this._electronService.ipcRenderer as IpcRenderer, IPC.IDLE_TIME).pipe(
-        map(([ev, idleTimeInMs]: any) => idleTimeInMs as number),
-      )
+    ? this._electronIdleTime$
     : this._chromeExtensionInterfaceService.onReady$.pipe(
         first(),
         switchMap(() => {
@@ -279,7 +280,6 @@ export class IdleEffects {
     private actions$: Actions,
     private _chromeExtensionInterfaceService: ChromeExtensionInterfaceService,
     private _workContextService: WorkContextService,
-    private _electronService: ElectronService,
     private _taskService: TaskService,
     private _simpleCounterService: SimpleCounterService,
     private _configService: GlobalConfigService,

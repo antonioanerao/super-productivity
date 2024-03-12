@@ -10,12 +10,12 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { IS_ELECTRON } from '../../app.constants';
 import { MatDialog } from '@angular/material/dialog';
 import { combineLatest, from, merge, Observable, Subject } from 'rxjs';
-import { IPC } from '../../../../electron/shared-with-frontend/ipc-events.const';
 import { DialogConfirmComponent } from '../../ui/dialog-confirm/dialog-confirm.component';
 import { GlobalConfigService } from '../../features/config/global-config.service';
 import {
   delay,
   filter,
+  first,
   map,
   shareReplay,
   startWith,
@@ -26,10 +26,8 @@ import {
 } from 'rxjs/operators';
 import * as moment from 'moment';
 import { T } from '../../t.const';
-import { ElectronService } from '../../core/electron/electron.service';
 import { WorkContextService } from '../../features/work-context/work-context.service';
 import { Task, TaskWithSubTasks } from '../../features/tasks/task.model';
-import { ipcRenderer } from 'electron';
 import { SyncProviderService } from '../../imex/sync/sync-provider.service';
 import { isToday, isYesterday } from '../../util/is-today.util';
 import { WorklogService } from '../../features/worklog/worklog.service';
@@ -39,6 +37,8 @@ import { EntityState } from '@ngrx/entity';
 import { TODAY_TAG } from '../../features/tag/tag.const';
 import { shareReplayUntil } from '../../util/share-replay-until';
 import { DateService } from 'src/app/core/date/date.service';
+import { Action } from '@ngrx/store';
+import { BeforeFinishDayService } from '../../features/before-finish-day/before-finish-day.service';
 
 const SUCCESS_ANIMATION_DURATION = 500;
 const MAGIC_YESTERDAY_MARGIN = 4 * 60 * 60 * 1000;
@@ -152,6 +152,8 @@ export class DailySummaryComponent implements OnInit, OnDestroy {
     map((cfg) => cfg && cfg.isEnableIdleTimeTracking),
   );
 
+  actionsToExecuteBeforeFinishDay: Action[] = [{ type: 'FINISH_DAY' }];
+
   private _successAnimationTimeout?: number;
 
   constructor(
@@ -162,11 +164,11 @@ export class DailySummaryComponent implements OnInit, OnDestroy {
     private readonly _matDialog: MatDialog,
     private readonly _persistenceService: PersistenceService,
     private readonly _worklogService: WorklogService,
-    private readonly _electronService: ElectronService,
     private readonly _cd: ChangeDetectorRef,
     private readonly _activatedRoute: ActivatedRoute,
     private readonly _syncProviderService: SyncProviderService,
-    private _dateService: DateService,
+    private readonly _beforeFinishDayService: BeforeFinishDayService,
+    private readonly _dateService: DateService,
   ) {
     this._taskService.setSelectedId(null);
     const todayStart = new Date();
@@ -210,12 +212,9 @@ export class DailySummaryComponent implements OnInit, OnDestroy {
   }
 
   async finishDay(): Promise<void> {
-    const doneTasks = await this.workContextService.doneTasks$.pipe(take(1)).toPromise();
-
-    this._taskService.moveToArchive(doneTasks);
-
+    await this._beforeFinishDayService.executeActions();
     if (IS_ELECTRON && this.isForToday) {
-      this._matDialog
+      const isConfirm = await this._matDialog
         .open(DialogConfirmComponent, {
           restoreFocus: true,
           data: {
@@ -225,20 +224,25 @@ export class DailySummaryComponent implements OnInit, OnDestroy {
           },
         })
         .afterClosed()
-        .subscribe((isConfirm: boolean) => {
-          if (isConfirm) {
-            this._finishDayForGood(() => {
-              (this._electronService.ipcRenderer as typeof ipcRenderer).send(
-                IPC.SHUTDOWN_NOW,
-              );
-            });
-          } else if (isConfirm === false) {
-            this._finishDayForGood(() => {
-              this._router.navigate(['/active/tasks']);
-            });
-          }
+        .pipe(first())
+        .toPromise();
+
+      // dialog was just clicked away
+      if (isConfirm === undefined) {
+        return;
+      } else if (isConfirm === true) {
+        await this._moveDoneToArchive();
+        this._finishDayForGood(() => {
+          window.ea.shutdownNow();
         });
+      } else if (isConfirm === false) {
+        await this._moveDoneToArchive();
+        this._finishDayForGood(() => {
+          this._router.navigate(['/active/tasks']);
+        });
+      }
     } else {
+      await this._moveDoneToArchive();
       this._finishDayForGood(() => {
         this._router.navigate(['/active/tasks']);
       });
@@ -261,6 +265,11 @@ export class DailySummaryComponent implements OnInit, OnDestroy {
 
   onTabIndexChange(i: number): void {
     this.selectedTabIndex = i;
+  }
+
+  private async _moveDoneToArchive(): Promise<void> {
+    const doneTasks = await this.workContextService.doneTasks$.pipe(take(1)).toPromise();
+    this._taskService.moveToArchive(doneTasks);
   }
 
   private async _finishDayForGood(cb?: any): Promise<void> {

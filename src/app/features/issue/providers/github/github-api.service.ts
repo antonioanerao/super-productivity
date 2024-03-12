@@ -75,7 +75,7 @@ export class GithubApiService {
 
     return this._sendRequest$(
       {
-        url: `${BASE}search/issues?q=${encodeURIComponent(searchText + repoQuery)}`,
+        url: `${BASE}search/issues?q=${encodeURI(searchText + repoQuery)}`,
       },
       cfg,
     ).pipe(
@@ -151,6 +151,14 @@ query Issues {
     `,
     ).pipe(
       map((res) => {
+        if ((res as any)?.errors?.length) {
+          this._snackService.open({
+            type: 'ERROR',
+            msg: (res as any)?.errors[0].message,
+          });
+          return [];
+        }
+
         try {
           return mapGithubGraphQLSearchResult(res);
         } catch (e) {

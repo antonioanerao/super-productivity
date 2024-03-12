@@ -20,6 +20,7 @@
       (blur)="onBlur($event)"
       [formControl]="taskSuggestionsCtrl"
       [matAutocomplete]="autoEl"
+      spellcheck="false"
       [placeholder]="(doubleEnterCount > 0)
          ? (T.F.TASK.ADD_TASK_BAR.START|translate)
          : isAddToBottom
@@ -35,6 +36,8 @@
     <div class="button-controls">
       <button
         (click)="isAddToBacklog=!isAddToBacklog"
+        [matTooltip]="T.F.TASK.ADD_TASK_BAR.TOGGLE_ADD_TO_BACKLOG_TODAY|translate"
+        matTooltipPosition="above"
         class="switch-add-to-btn"
         mat-icon-button
         type="button"
@@ -44,6 +47,8 @@
       </button>
       <button
         (click)="isAddToBottom=!isAddToBottom"
+        [matTooltip]="T.F.TASK.ADD_TASK_BAR.TOGGLE_ADD_TOP_OR_BOTTOM|translate"
+        matTooltipPosition="above"
         class="switch-add-to-bot-btn"
         mat-icon-button
         type="button"

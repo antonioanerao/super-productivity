@@ -1,5 +1,5 @@
 import { ShowSubTasksMode, TaskCopy } from './task.model';
-import { shortSyntax } from './short-syntax.util';
+import { shortSyntax } from './short-syntax';
 import { getWorklogStr } from '../../util/get-work-log-str';
 import { Tag } from '../tag/tag.model';
 import { DEFAULT_TAG } from '../tag/tag.const';
@@ -28,11 +28,13 @@ const TASK: TaskCopy = {
   attachments: [],
 
   issueId: null,
+  issueProviderId: null,
   issuePoints: null,
   issueType: null,
   issueAttachmentNr: null,
   issueLastUpdated: null,
   issueWasUpdated: null,
+  issueTimeTracked: null,
 };
 const ALL_TAGS: Tag[] = [
   { ...DEFAULT_TAG, id: 'blu_id', title: 'blu' },
@@ -43,8 +45,11 @@ const ALL_TAGS: Tag[] = [
   { ...DEFAULT_TAG, id: 'multi_word_id', title: 'Multi Word Tag' },
 ];
 
-const getPlannedDateTimestamp = (taskInput: TaskCopy): number => {
-  const r = shortSyntax(taskInput);
+const getPlannedDateTimestampFromShortSyntaxReturnValue = (
+  taskInput: TaskCopy,
+  now: Date = new Date(),
+): number => {
+  const r = shortSyntax(taskInput, undefined, undefined, now);
   const parsedDateInMilliseconds = r?.taskChanges?.plannedAt as number;
   return parsedDateInMilliseconds;
 };
@@ -168,7 +173,8 @@ describe('shortSyntax', () => {
         ...TASK,
         title: 'Test @4pm',
       };
-      const parsedDateInMilliseconds = getPlannedDateTimestamp(t);
+      const parsedDateInMilliseconds =
+        getPlannedDateTimestampFromShortSyntaxReturnValue(t);
       const parsedDate = new Date(parsedDateInMilliseconds);
       const now = new Date();
       if (now.getHours() > 16 || (now.getHours() === 16 && now.getMinutes() > 0)) {
@@ -187,24 +193,41 @@ describe('shortSyntax', () => {
         ...TASK,
         title: 'Test @Friday',
       };
-      const parsedDateInMilliseconds = getPlannedDateTimestamp(t);
+      const now = new Date('Fri Feb 09 2024 13:31:29 ');
+      const parsedDateInMilliseconds = getPlannedDateTimestampFromShortSyntaxReturnValue(
+        t,
+        now,
+      );
       const parsedDate = new Date(parsedDateInMilliseconds);
       // 5 represents Friday
       expect(parsedDate.getDay()).toEqual(5);
-      const now = new Date();
-      const todayInNumber = now.getDay();
-      let dayIncrement = 0;
+      const dayIncrement = 7;
       // If today happens to be Friday, the parsed date will be the next Friday,
       // 7 days from today
-      if (todayInNumber === 5) {
-        dayIncrement = 7;
-      } else {
-        if (todayInNumber < 5) {
-          dayIncrement = 5 - todayInNumber;
-        } else {
-          dayIncrement = 7 - todayInNumber + 5;
-        }
-      }
+      const nextFriday = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() + dayIncrement,
+      );
+      const isDateSetCorrectly = checkSameDay(parsedDate, nextFriday);
+      expect(isDateSetCorrectly).toBeTrue();
+    });
+
+    it('should correctly parse day of the week', () => {
+      const t = {
+        ...TASK,
+        title: 'Test @Friday',
+      };
+      const now = new Date('Fri Feb 09 2024 11:31:29 ');
+      const parsedDateInMilliseconds = getPlannedDateTimestampFromShortSyntaxReturnValue(
+        t,
+        now,
+      );
+      const parsedDate = new Date(parsedDateInMilliseconds);
+      expect(parsedDate.getDay()).toEqual(5);
+      const dayIncrement = 0;
+      // If today happens to be Friday, the parsed date will be the next Friday,
+      // 7 days from today only when after 12
       const nextFriday = new Date(
         now.getFullYear(),
         now.getMonth(),
@@ -258,6 +281,34 @@ describe('shortSyntax', () => {
         taskChanges: {
           title: 'Fun title',
           tagIds: ['blu_id', 'A_id'],
+        },
+      });
+    });
+
+    it('should not trigger for # without space before', () => {
+      const t = {
+        ...TASK,
+        title: 'Fun title#blu',
+      };
+      const r = shortSyntax(t, ALL_TAGS);
+
+      expect(r).toEqual(undefined);
+    });
+
+    it('should not trigger for # without space before but parse other tags', () => {
+      const t = {
+        ...TASK,
+        title: 'Fun title#blu #bla',
+      };
+      const r = shortSyntax(t, ALL_TAGS);
+
+      expect(r).toEqual({
+        newTagTitles: [],
+        remindAt: null,
+        projectId: undefined,
+        taskChanges: {
+          title: 'Fun title#blu',
+          tagIds: ['bla_id'],
         },
       });
     });
@@ -318,7 +369,7 @@ describe('shortSyntax', () => {
       });
     });
 
-    it('should not add tags for sub tasks', () => {
+    it('should add tags for sub tasks', () => {
       const t = {
         ...TASK,
         parentId: 'SOMEPARENT',
@@ -327,10 +378,14 @@ describe('shortSyntax', () => {
       };
       const r = shortSyntax(t, ALL_TAGS);
 
-      expect(r).toEqual(undefined);
+      expect(r).toEqual({
+        newTagTitles: ['idontexist'],
+        projectId: undefined,
+        remindAt: null,
+        taskChanges: { tagIds: ['blu_id'], title: 'Fun title' },
+      });
     });
   });
-
   describe('should work with all combined', () => {
     it('', () => {
       const t = {
@@ -402,6 +457,15 @@ describe('shortSyntax', () => {
           title: 'Fun title',
         },
       });
+    });
+
+    it('should not parse without missing whitespace before', () => {
+      const t = {
+        ...TASK,
+        title: 'Fun title+ProjectEasyShort',
+      };
+      const r = shortSyntax(t, [], projects);
+      expect(r).toEqual(undefined);
     });
 
     it('should work together with time estimates', () => {
@@ -499,7 +563,8 @@ describe('shortSyntax', () => {
     });
   });
 
-  describe('due:', () => {});
+  // TODO
+  // describe('due:', () => {});
 
   describe('combined', () => {
     it('should work when time comes first', () => {
@@ -568,7 +633,8 @@ describe('shortSyntax', () => {
         ...TASK,
         title: taskInput,
       };
-      const parsedDateInMilliseconds = getPlannedDateTimestamp(t);
+      const parsedDateInMilliseconds =
+        getPlannedDateTimestampFromShortSyntaxReturnValue(t);
       const parsedDate = new Date(parsedDateInMilliseconds);
       // The parsed day and time should be Friday, or 5, and time is 16 hours and 0 minute
       expect(parsedDate.getDay()).toEqual(5);
@@ -591,7 +657,7 @@ describe('shortSyntax', () => {
         ...TASK,
         title: 'Test @fri 4pm #html #css',
       };
-      const plannedTimestamp = getPlannedDateTimestamp(t);
+      const plannedTimestamp = getPlannedDateTimestampFromShortSyntaxReturnValue(t);
       const isPlannedDateAndTimeCorrect = checkIfCorrectDateAndTime(
         plannedTimestamp,
         'friday',

@@ -47,15 +47,17 @@ import { IdleModule } from './features/idle/idle.module';
 import { TrackingReminderModule } from './features/tracking-reminder/tracking-reminder.module';
 import { FinishDayBeforeCloseModule } from './features/finish-day-before-close/finish-day-before-close.module';
 import { AndroidModule } from './features/android/android.module';
-import { WelcomeModule } from './features/welcome/welcome.module';
 import { DominaModeModule } from './features/domina-mode/domina-mode.module';
+import { FocusModeModule } from './features/focus-mode/focus-mode.module';
+import { CalendarIntegrationModule } from './features/calendar-integration/calendar-integration.module';
+import { ShepherdComponent } from './features/shepherd/shepherd.component';
 
 // NOTE: export required for aot to work
 export const createTranslateLoader = (http: HttpClient): TranslateHttpLoader =>
   new TranslateHttpLoader(http, './assets/i18n/', '.json');
 
 @NgModule({
-  declarations: [AppComponent],
+  declarations: [AppComponent, ShepherdComponent],
   imports: [
     // Those features need to be included first for store not to mess up, probably because we use it initially at many places
     ConfigModule,
@@ -77,12 +79,13 @@ export const createTranslateLoader = (http: HttpClient): TranslateHttpLoader =>
     NoteModule,
     BookmarkModule,
     TasksModule,
-    WelcomeModule,
     SyncModule,
     MaterialCssVarsModule.forRoot(),
     SearchBarModule,
     FinishDayBeforeCloseModule,
     DominaModeModule,
+    FocusModeModule,
+    CalendarIntegrationModule,
 
     AndroidModule,
     // throws build error ...(IS_ANDROID_WEB_VIEW ? [AndroidModule] : []),

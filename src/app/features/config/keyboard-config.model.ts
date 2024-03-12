@@ -3,6 +3,7 @@ export type KeyboardConfig = Readonly<{
   globalAddNote: string | null;
   globalAddTask: string | null;
   toggleBacklog: string | null;
+  goToFocusMode: string | null;
   goToWorkView: string | null;
   goToTimeline: string | null;
   goToScheduledView: string | null;
@@ -33,6 +34,8 @@ export type KeyboardConfig = Readonly<{
   selectNextTask: string | null;
   moveTaskUp: string | null;
   moveTaskDown: string | null;
+  moveTaskToTop: string | null;
+  moveTaskToBottom: string | null;
   moveToBacklog: string | null;
   moveToTodaysTasks: string | null;
   expandSubTasks: string | null;

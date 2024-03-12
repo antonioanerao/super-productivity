@@ -1,0 +1,68 @@
+@import '../../../../variables';
+
+:host {
+  position: fixed;
+  z-index: $z-focus-mode-overlay;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+header {
+}
+
+main {
+  flex-grow: 1;
+  display: flex;
+  position: relative;
+  height: 500px;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+}
+
+.scroll-container {
+  overflow: auto;
+  max-height: 100%;
+  width: 100%;
+}
+
+.close-btn {
+  position: absolute;
+  top: $s;
+  right: $s;
+  width: 56px;
+  height: 56px;
+  z-index: 3;
+  @include mousePrimaryDevice {
+    visibility: hidden;
+  }
+
+  :host:hover & {
+    visibility: visible;
+  }
+
+  mat-icon {
+    font-size: 32px !important; //make it bigger, the default being 24px.
+    width: 32px;
+    height: 32px;
+  }
+}
+
+.pomodoro-info-wrapper {
+  text-align: center;
+  max-width: 500px;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.pomodoro-info-msg {
+  font-size: 20px;
+  margin-bottom: 16px;
+}

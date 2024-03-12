@@ -24,6 +24,7 @@
 >
   <task
     *ngFor="let task of filteredTasks; trackBy: trackByFn; let i = index;"
+    [isInSubTaskList]="isSubTaskList"
     [isBacklog]="isBacklog"
     [task]="task"
   >

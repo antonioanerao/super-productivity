@@ -1,4 +1,4 @@
-<ng-container *ngIf="IS_TOUCH_ONLY">
+<ng-container *ngIf="IS_TOUCH_PRIMARY">
   <div
     #blockLeftEl
     class="block-left bg-400"
@@ -84,8 +84,8 @@
     <div class="title-and-left-btns-wrapper">
       <div
         (click)="focusSelf()"
-        [class.handle-par]="!task.parentId"
-        [class.handle-sub]="task.parentId"
+        [class.handle-par]="!isInSubTaskList"
+        [class.handle-sub]="isInSubTaskList"
         class="drag-handle"
       >
         <mat-icon
@@ -134,18 +134,13 @@
       </div>
 
       <div
-        (click)="IS_TOUCH_ONLY && toggleShowAdditionalInfoOpen($event)"
+        (click)="IS_TOUCH_PRIMARY && toggleShowAdditionalInfoOpen($event)"
         class="title-and-tags-wrapper"
       >
         <div
           class="parent-title"
-          *ngIf="isShowParentTitle && task.parentId"
+          *ngIf="!isInSubTaskList && task.parentId"
         >
-          <div
-            class="dot"
-            *ngIf="(projectColor$|async) as projectColor"
-            [style.backgroundColor]="projectColor"
-          ></div>
           <div class="title">{{parentTitle$|async}}</div>
         </div>
 
@@ -154,16 +149,17 @@
           (editFinished)="updateTaskTitleIfChanged($event)"
           [isResetAfterEdit]="true"
           [value]="task.title"
-          class="task-title show-only-on-no-touch-only"
+          spellcheck="false"
+          class="task-title show-only-on-mouse-primary"
           contentEditableOnClick
           contenteditable="true"
         ></div>
 
-        <div class="task-title show-only-on-touch-only">{{task.title}}</div>
+        <div class="task-title show-only-on-touch-primary">{{task.title}}</div>
 
         <tag-list
-          *ngIf="!task.parentId || isDev"
           [task]="task"
+          [isShowProjectTagNever]="isInSubTaskList"
         ></tag-list>
       </div>
     </div>
@@ -207,7 +203,7 @@
 
       <div class="controls">
         <div
-          *ngIf="isFirstLineHover && !IS_TOUCH_ONLY"
+          *ngIf="isFirstLineHover && !IS_TOUCH_PRIMARY"
           class="hover-controls"
         >
           <button
@@ -237,7 +233,7 @@
 
           <button
             (click)="addToMyDay()"
-            *ngIf="!task.parentId && !isTodayTag"
+            *ngIf="isShowAddToToday"
             [title]="T.F.TASK.CMP.ADD_TO_MY_DAY|translate"
             class="ico-btn"
             color=""
@@ -248,7 +244,7 @@
 
           <button
             (click)="removeFromMyDay()"
-            *ngIf="!task.parentId && !task.isDone && isTodayTag && (task.projectId || task.tagIds?.length > 1)"
+            *ngIf="isShowRemoveFromToday"
             [title]="T.F.TASK.CMP.REMOVE_FROM_MY_DAY|translate"
             class="ico-btn"
             color=""
@@ -270,7 +266,7 @@
 
           <button
             (click)="toggleShowAdditionalInfoOpen()"
-            *ngIf="!task.notes&&!task.issueId&&!isSelected"
+            *ngIf="!task.notes && (!task.issueId||task.issueType==='CALENDAR') && !isSelected"
             [title]="T.F.TASK.CMP.TOGGLE_ADDITIONAL|translate"
             class="ico-btn show-additional-info-btn"
             color=""
@@ -313,8 +309,9 @@
         <div>
           <button
             (click)="toggleShowAdditionalInfoOpen()"
-            *ngIf="task.notes||task.issueId||isSelected"
+            *ngIf="task.notes|| (task.issueId&&task.issueType!=='CALENDAR') || isSelected"
             [title]="T.F.TASK.CMP.TOGGLE_ADDITIONAL|translate"
+            [class.closeBtn]="!task.issueWasUpdated && isSelected"
             class="ico-btn show-additional-info-btn"
             color=""
             mat-icon-button
@@ -337,7 +334,7 @@
           <ng-template matMenuContent>
             <button
               (click)="startTask()"
-              *ngIf="IS_TOUCH_ONLY && !task.isDone && !isCurrent && !task.subTasks?.length"
+              *ngIf="IS_TOUCH_PRIMARY && !task.isDone && !isCurrent && !task.subTasks?.length"
               mat-menu-item
             >
               <mat-icon
@@ -348,7 +345,7 @@
             </button>
             <button
               (click)="pauseTask()"
-              *ngIf="IS_TOUCH_ONLY && !task.isDone && isCurrent && !task.subTasks?.length"
+              *ngIf="IS_TOUCH_PRIMARY && !task.isDone && isCurrent && !task.subTasks?.length"
               mat-menu-item
             >
               <mat-icon>pause</mat-icon>
@@ -357,7 +354,7 @@
 
             <button
               (click)="removeFromMyDay()"
-              *ngIf="IS_TOUCH_ONLY && !task.parentId && !task.isDone && isTodayTag && (task.projectId || task.tagIds?.length > 1)"
+              *ngIf="IS_TOUCH_PRIMARY && !task.parentId && !task.isDone && isTodayTag && (task.projectId || task.tagIds?.length > 1)"
               mat-menu-item
             >
               <mat-icon svgIcon="remove_today"></mat-icon>
@@ -408,7 +405,7 @@
 
             <!--TODO maybe handle dynamically -->
             <a
-              *ngIf="task.issueId"
+              *ngIf="task.issueId && task.issueType !=='CALENDAR'"
               [href]="issueUrl$|async"
               mat-menu-item
               style="color: inherit"
@@ -420,7 +417,7 @@
 
             <button
               (click)="updateIssueData()"
-              *ngIf="task.issueId"
+              *ngIf="task.issueId && task.issueType !=='CALENDAR'"
               mat-menu-item
             >
               <mat-icon [svgIcon]="task.issueType|issueIcon"></mat-icon>
@@ -455,7 +452,7 @@
             </button>
 
             <button
-              *ngIf="!task.parentId && !task.issueId && !task.repeatCfgId"
+              *ngIf="!task.parentId && (!task.issueId || task.issueType ==='CALENDAR') && !task.repeatCfgId && (moveToProjectList$|async)?.length > 0"
               [matMenuTriggerFor]="projectMenu"
               mat-menu-item
             >
@@ -535,6 +532,7 @@
       [@expand]
       [isHideAll]="(task._showSubTasksMode!==ShowSubTasksMode.Show)"
       [isHideDone]="(task._showSubTasksMode===ShowSubTasksMode.HideDone)"
+      [isSubTaskList]="true"
       [listModelId]="task.id"
       [parentId]="task.id"
       [tasks]="task.subTasks"

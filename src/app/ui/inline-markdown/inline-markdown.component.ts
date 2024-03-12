@@ -19,8 +19,6 @@ import { map, startWith } from 'rxjs/operators';
 import { GlobalConfigService } from '../../features/config/global-config.service';
 import { MatDialog } from '@angular/material/dialog';
 import { DialogFullscreenMarkdownComponent } from '../dialog-fullscreen-markdown/dialog-fullscreen-markdown.component';
-import { ElectronService } from '../../core/electron/electron.service';
-import { shell } from 'electron';
 
 const HIDE_OVERFLOW_TIMEOUT_DURATION = 300;
 
@@ -54,7 +52,6 @@ export class InlineMarkdownComponent implements OnInit, OnDestroy {
   private _hideOverFlowTimeout: number | undefined;
 
   constructor(
-    private _electronService: ElectronService,
     private _cd: ChangeDetectorRef,
     private _globalConfigService: GlobalConfigService,
     private _matDialog: MatDialog,
@@ -116,8 +113,11 @@ export class InlineMarkdownComponent implements OnInit, OnDestroy {
   }
 
   toggleShowEdit($event?: MouseEvent): void {
-    // check if anchor link was clicked
-    if (!$event || ($event.target as HTMLElement).tagName !== 'A') {
+    if (
+      !$event ||
+      // check if anchor link was clicked
+      ($event.target as HTMLElement).tagName !== 'A'
+    ) {
       this.isShowEdit = true;
       this.modelCopy = this.model || '';
 
@@ -233,7 +233,7 @@ export class InlineMarkdownComponent implements OnInit, OnDestroy {
         const href = target.getAttribute('href');
         if (href !== null) {
           ev.preventDefault();
-          (this._electronService.shell as typeof shell).openExternal(href);
+          window.ea.openExternalUrl(href);
         }
       }
     });

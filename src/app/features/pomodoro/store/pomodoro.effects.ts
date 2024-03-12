@@ -33,9 +33,6 @@ import { NotifyService } from '../../../core/notify/notify.service';
 import { IS_ELECTRON } from '../../../app.constants';
 import { T } from '../../../t.const';
 import { SnackService } from '../../../core/snack/snack.service';
-import { ElectronService } from '../../../core/electron/electron.service';
-import { ipcRenderer } from 'electron';
-import { IPC } from '../../../../../electron/shared-with-frontend/ipc-events.const';
 import { TaskService } from '../../tasks/task.service';
 
 @Injectable()
@@ -163,13 +160,13 @@ export class PomodoroEffects {
     { dispatch: false },
   );
 
-  pauseTimeTrackingForPause$: Observable<unknown> = createEffect(() =>
+  pauseTimeTrackingForBreak$: Observable<unknown> = createEffect(() =>
     this._pomodoroService.isEnabled$.pipe(
       switchMap((isEnabledI) =>
         !isEnabledI
           ? EMPTY
           : this._actions$.pipe(
-              ofType(pausePomodoro, pausePomodoroBreak),
+              ofType(startPomodoroBreak),
               withLatestFrom(this.currentTaskId$),
               filter(([, currentTaskId]) => !!currentTaskId),
               mapTo(unsetCurrentTask()),
@@ -261,13 +258,10 @@ export class PomodoroEffects {
           tap(([progress, isPause, isPauseBreak]: [number, boolean, boolean]) => {
             const progressBarMode: 'normal' | 'pause' =
               isPause || isPauseBreak ? 'pause' : 'normal';
-            (this._electronService.ipcRenderer as typeof ipcRenderer).send(
-              IPC.SET_PROGRESS_BAR,
-              {
-                progress,
-                progressBarMode,
-              },
-            );
+            window.ea.setProgressBar({
+              progress,
+              progressBarMode,
+            });
           }),
         ),
       { dispatch: false },
@@ -278,7 +272,6 @@ export class PomodoroEffects {
     private _actions$: Actions,
     private _notifyService: NotifyService,
     private _matDialog: MatDialog,
-    private _electronService: ElectronService,
     private _snackService: SnackService,
     private _store$: Store<any>,
     private _taskService: TaskService,

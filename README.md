@@ -79,7 +79,7 @@ Super Productivity is an advanced todo list app with integrated [Timeboxing](htt
   - The **anti-procrastination feature** helps you gain perspective when you really need to.
   - Need some extra focus? A **Pomodoro timer** is also always at hand.
   - **Collect personal metrics** to see, which of your work routines need adjustments.
-- Integrate with **Jira**, **GitHub**, **GitLab**, and **OpenProject**. Auto import tasks assigned to you, plan the details locally, automatically create work logs, and get notified immediately, when something changes.
+- Integrate with **Jira**, **GitHub**, **GitLab**, **Gitea** and **OpenProject**. Auto import tasks assigned to you, plan the details locally, automatically create work logs, and get notified immediately, when something changes.
 - Attach context information to tasks and projects. Create **notes**, attach **files** or create **project-level bookmarks** for links, files, and even commands.
 - Super Productivity **respects your privacy** and **does NOT collect any data** and there are no user accounts or registration. **You decide where you store your data!**
 - It's **free** and **open source** and always will be.
@@ -94,14 +94,14 @@ If you need some help, [this article on dev.to is the best place to start](https
 
 If you prefer, there is also a (long) [youtube video available](https://www.youtube.com/watch?v=VoF2_RSdNXA).
 
-There is another [article](https://dev.to/johannesjo/super-productivity-how-to-grow-fond-of-time-tracking-and-task-management-22ee) on how I personally might use the app - and still [another one](https://dev.to/johannesjo/the-prioritising-scheme-how-to-eat-the-frog-with-super-productivity-mlk) on how I implement the 'eat the frog' prioritizing scheme in the app.
+There is another older – the app looks and feels much better now ;) – [article](https://dev.to/johannesjo/super-productivity-how-to-grow-fond-of-time-tracking-and-task-management-22ee) on how I personally might use the app - and still [another one](https://dev.to/johannesjo/the-prioritising-scheme-how-to-eat-the-frog-with-super-productivity-mlk) on how I implement the 'eat the frog' prioritizing scheme in the app.
 
 [If you have further questions, please refer to the discussions page](https://github.com/johannesjo/super-productivity/discussions).
 
 <details>
 <summary> <b>⌨ Keyboard shortcuts and short-syntax</b></summary>
 
-### Keyboard shortcuts (most importan)
+### Keyboard shortcuts (most important)
 
 - `Shift`+`A`: Open add task bar
 - `Enter`: Edit currently focussed task title
@@ -133,7 +133,7 @@ Can be used when adding a task.
 
 Check out the web version even though it is a bit limited: Time tracking only works if the app is open and for idle time tracking to work, the chrome extension has to be installed.
 
-If you want the Jira integration and idle time tracking to work, you have to also download and install the [Super Productivity Chrome Extension](https://chrome.google.com/webstore/detail/super-productivity/ljkbjodfmekklcoibdnhahlaalhihmlb).
+If you want the Jira integration and idle time tracking to work, you also have to download and install the [Super Productivity Chrome Extension](https://chrome.google.com/webstore/detail/super-productivity/ljkbjodfmekklcoibdnhahlaalhihmlb).
 
 ## :computer: Downloads & Install
 
@@ -148,6 +148,7 @@ Due to certification issues it's recommended to download the app from the Micros
 <a href='//www.microsoft.com/store/apps/9nhfvg8361tw?cid=storebadge&ocid=badge'><img src='https://developer.microsoft.com/store/badges/images/English_get-it-from-MS.png' alt='English badge' width="127" height="52"/></a>
 
 You can also install the app using [Chocolatey](https://community.chocolatey.org/packages/super-productivity):
+
 ```powershell
 choco install super-productivity
 ```
@@ -155,7 +156,9 @@ choco install super-productivity
 ### Linux
 
 #### Snap - Most distributions
+
 Install via command-line:
+
 ```bash
 # stable
 sudo snap install superproductivity
@@ -166,6 +169,7 @@ sudo snap install --channel=edge superproductivity
 # it is also recommended to disable updates to the app while it is running:
 sudo snap set core experimental.refresh-app-awareness=true
 ```
+
 <a href="https://snapcraft.io/superproductivity">
   <img alt="Get it from the Snap Store" src="https://snapcraft.io/static/images/badges/en/snap-store-black.svg" />
 </a>
@@ -224,13 +228,17 @@ There are several ways to help.
 
 4. **[Provide your opinion](https://github.com/johannesjo/super-productivity/issues?q=is%3Aissue+is%3Aopen+sort%3Areactions-%2B1-desc+label%3A%22community+feedback+wanted%22):** Some community suggestions are controversial. Your input might be helpful and if it is just an up- or down-vote.
 
-5. **[Provide a more refined ui spec for existing feature requests](https://github.com/johannesjo/super-productivity/issues?q=is%3Aissue+is%3Aopen+label%3A%22needs+concept+and%2For+ui+spec%22)**
+5. **[Provide a more refined UI spec for existing feature requests](https://github.com/johannesjo/super-productivity/issues?q=is%3Aissue+is%3Aopen+label%3A%22needs+concept+and%2For+ui+spec%22)**
 
 6. **[Report bugs](https://github.com/johannesjo/super-productivity/issues/new)**
 
-7. **[Make a feature or improvement request](https://github.com/johannesjo/super-productivity/issues/new)**: Something can be be done better? Something essential missing? Let us know!
+7. **[Make a feature or improvement request](https://github.com/johannesjo/super-productivity/issues/new)**: Something can be done better? Something essential missing? Let us know!
 
 8. **[Translations](https://github.com/johannesjo/super-productivity/tree/master/src/assets/i18n), Icons, etc.**: You don't have to be programmer to help. Some of the icons really need improvement and many of the translations could use some love.
+
+[![inlang status badge](https://badge.inlang.com/?url=github.com/johannesjo/super-productivity)](https://fink.inlang.com/github.com/johannesjo/super-productivity?ref=badge)
+
+You can use the Fink Localization Editor to edit, lint, and add translations for different languages. [Contribute via fink Guide](https://inlang.com/g/6ddyhpoi).
 
 9. **[Sponsor the project](https://github.com/sponsors/johannesjo)**
 
@@ -295,17 +303,17 @@ For the desktop version automatic backups are stored per default in the `backup`
 
 ## User Data Folder
 
-Where user data is stored differs from os to os. The most common locations are:
+Where user data is stored differs from OS to OS. The most common locations are:
 
-| OS | Location |
-| - | - |
-| **Mac OS** | `~/Library/Application Support/superProductivity/` |
+| OS          | Location                                                                                        |
+| ----------- | ----------------------------------------------------------------------------------------------- |
+| **Mac OS**  | `~/Library/Application Support/superProductivity/`                                              |
 | **Windows** | `C:\Users\<YOUR_USER_NAME>\AppData\Roaming\superProductivity/` or `%APPDATA%\superProductivity` |
-| **Linux** | `~/.config/superProductivity/` |
+| **Linux**   | `~/.config/superProductivity/`                                                                  |
 
 The path should be shown when you go to the "Automatic Backups` section on the configuration page (minus the "backup" sub folder). You can also see it printed out when you start the app from the command line.
 
-For web browsers data is simply stored for the current user inside the browser storage.
+For web browsers, data is simply stored for the current user inside the browser storage.
 
 ### Using a custom folder to save user data
 
