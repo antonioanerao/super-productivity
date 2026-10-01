@@ -19,7 +19,7 @@
  * `synthesizeMergedChanges`.
  */
 
-import { ActionType, OpType } from '../core/operation.types';
+import { ActionType, isLwwUpdatePayload, OpType } from '../core/operation.types';
 import type { Operation } from '../core/operation.types';
 import {
   extractActionPayload,
@@ -27,7 +27,7 @@ import {
   extractUpdateChanges,
   isMultiEntityPayload,
 } from '@sp/sync-core';
-import { isMultiEntityOperation } from '../util/get-op-entity-ids.util';
+import { getOpEntityIds, isMultiEntityOperation } from '../util/get-op-entity-ids.util';
 import { applyClearedFields } from '../../util/cleared-update-fields';
 
 /** Metadata timestamps excluded from real-field overlap checks. */
@@ -187,6 +187,27 @@ export const hasOpaqueChanges = (
   entityId: string,
 ): boolean => ops.some((op) => isOpaqueChangeOp(op, payloadKey, entityId));
 
+/**
+ * True when every field the side changed is a NOISE field (and the side is
+ * decomposable at all — opaque ops carry real, non-extractable mutations).
+ */
+export const isNoiseOnlySide = (
+  ops: Operation[],
+  payloadKey: string,
+  entityId: string,
+): boolean => {
+  if (ops.some((op) => op.opType === OpType.Delete)) {
+    return false;
+  }
+  if (hasOpaqueChanges(ops, payloadKey, entityId)) {
+    return false;
+  }
+  const changedFields = Object.keys(mergeChangedFields(ops, payloadKey, entityId));
+  return (
+    changedFields.length > 0 && changedFields.every((field) => NOISE_FIELDS.has(field))
+  );
+};
+
 /** The non-NOISE keys of a changed-field map. */
 const nonNoiseKeys = (changes: Record<string, unknown>): string[] =>
   Object.keys(changes).filter((field) => !NOISE_FIELDS.has(field));
@@ -339,9 +360,58 @@ export const isCommutingTimeDeltaCrossing = (params: {
   payloadKey: string;
   entityId: string;
 }): boolean =>
-  [...params.localOps, ...params.remoteOps].some(
+  isTimeDeltaBesideTimelessRow(params) ||
+  ([...params.localOps, ...params.remoteOps].some(
     (op) => op.actionType === ActionType.TIME_TRACKING_SYNC_TIME_SPENT,
-  ) && isDisjointMergeEligible(params);
+  ) &&
+    isDisjointMergeEligible(params));
+
+/**
+ * True when every local op is a `syncTimeSpent` delta and every remote op is
+ * an LWW resolution row (patch or snapshot another device built) of this one
+ * task that writes no time field (#10421, #10408). The delta then adds to
+ * whatever the row leaves, so both apply as they are.
+ *
+ * Only which top-level keys a `'patch'` row writes or clears is read, never
+ * its values; no op is built from the row and rows never merge (decision 5a
+ * in docs/sync-and-op-log/lww-field-level-resolution.md). A patch that writes
+ * or clears `timeSpent`/`timeSpentOnDay` keeps whole-entity LWW, and so does
+ * every `'replace'` row: `setOne` rewrites all fields, time included, whatever
+ * keys it carries.
+ */
+const isTimeDeltaBesideTimelessRow = ({
+  localOps,
+  remoteOps,
+  entityId,
+}: {
+  localOps: Operation[];
+  remoteOps: Operation[];
+  entityId: string;
+}): boolean =>
+  localOps.length > 0 &&
+  remoteOps.length > 0 &&
+  localOps.every((op) => op.actionType === ActionType.TIME_TRACKING_SYNC_TIME_SPENT) &&
+  remoteOps.every((op) => {
+    const payload = op.payload;
+    if (
+      op.entityType !== 'TASK' ||
+      op.opType !== OpType.Update ||
+      !isLwwUpdatePayload(payload) ||
+      payload.lwwUpdateMode !== 'patch'
+    ) {
+      return false;
+    }
+    const ids = getOpEntityIds(op);
+    const keys = [
+      ...Object.keys(payload.actionPayload),
+      ...(Array.isArray(payload.clearedFields) ? payload.clearedFields : []),
+    ];
+    return (
+      ids.length === 1 &&
+      ids[0] === entityId &&
+      !SYNC_TIME_SPENT_FIELDS.some((field) => keys.includes(field))
+    );
+  });
 
 /**
  * Synthesizes the merged CHANGES DELTA — the union of both sides' changed
