@@ -34,10 +34,14 @@ const SEEDS_PER_VARIANT = 40;
 const STEPS = 40;
 /**
  * Seeds whose upgrade-restart keeps its recorded clock, because dropping it
- * would hit known gap #10258: without a recorded clock a device cannot judge a
- * snapshot base, so it misses a masked replacement instead of risking a
+ * still hits #10258. Gating the rev pre-check on a recorded clock does not
+ * cover a masked replacement that lands after a device's last read but before
+ * its first read after upgrading: that read adopts it as the baseline, so it is
+ * never hydrated (seed 32 traces to this window). Without a recorded clock a
+ * device cannot judge a snapshot base, and flagging instead would risk a
  * conflict dialog on every first sync after upgrading. Everything else in these
- * seeds still runs. Return them to the no-clock path once #10258 is fixed.
+ * seeds still runs; both still diverge with the gate (checked 2026-10). Return
+ * them to the no-clock path once #10258 is fully fixed.
  */
 const KEEP_CLOCK_ON_UPGRADE_SEEDS = [32];
 /**
@@ -389,6 +393,50 @@ for (const isUseSplitSyncFiles of [false, true]) {
             .toEqual([...observer.tasks].sort());
         }
       };
+
+      it('refuses an upgraded upload onto a replacement and hydrates it next (#10258)', async () => {
+        const a = await createDevice('dev-a');
+        const b = await createDevice('dev-b');
+        await as(a, async () => {
+          edit(a);
+          await download(a, () => 'remote');
+          await upload(a);
+        });
+        await as(b, () => download(b, () => 'remote'));
+        await as(a, () => download(a, () => 'remote'));
+        // First start after upgrading: the rev is persisted, last-seen clocks are not.
+        await as(a, () => restart(a, true));
+        // Unchanged rev: without a recorded clock the Dropbox pre-check must still
+        // read the file, so this download records the baseline.
+        await as(a, () => download(a, () => 'remote'));
+
+        // Another device's Keep local lands before a's upload, masked by a tail op.
+        await as(b, async () => {
+          edit(b);
+          await keepLocal(b);
+          edit(b);
+          await upload(b);
+        });
+        const replacedTask = 'dev-b-t1';
+        expect(a.tasks.has(replacedTask)).toBe(false);
+
+        await as(a, async () => {
+          edit(a);
+          await expectAsync(
+            a.adapter.uploadOps(a.pending, a.id, await a.adapter.getLastServerSeq()),
+          ).toBeRejectedWithError(UploadRevToMatchMismatchAPIError);
+        });
+        await as(a, async () => {
+          const since = await a.adapter.getLastServerSeq();
+          const res = (await a.adapter.downloadOps(
+            since,
+            a.id,
+          )) as FileSnapshotOpDownloadResponse;
+          expect(res.gapDetected).withContext('replacement detected').toBe(true);
+        });
+        await as(a, () => download(a, () => 'remote'));
+        expect(a.tasks.has(replacedTask)).withContext('replacement hydrated').toBe(true);
+      });
 
       for (let seed = 1; seed <= SEEDS_PER_VARIANT; seed++) {
         it(`converges for seed ${seed}`, () => runSeed(seed));
