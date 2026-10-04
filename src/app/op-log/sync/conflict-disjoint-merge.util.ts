@@ -20,6 +20,7 @@
 import { ActionType, isLwwUpdatePayload, OpType } from '../core/operation.types';
 import type { Operation } from '../core/operation.types';
 import {
+  deepEqual,
   extractActionPayload,
   extractEntityFromPayload,
   extractUpdateChanges,
@@ -161,6 +162,54 @@ export const mergeChangedFields = (
     Object.assign(merged, extractOpChanges(op, payloadKey, entityId));
   }
   return merged;
+};
+
+/**
+ * A rejected local replacement can cross a plain content edit only when
+ * applying that edit to its unchanged body would write the same real values.
+ * This reads the author's own replacement for a no-op proof; it neither merges
+ * an incoming resolution row nor synthesizes new fields from one.
+ */
+export const isTaskSnapshotUnchangedByContent = (
+  snapshot: Operation,
+  other: Operation,
+): boolean => {
+  if (
+    snapshot.entityType !== 'TASK' ||
+    snapshot.opType !== OpType.Update ||
+    getOpEntityIds(snapshot).length !== 1 ||
+    !isLwwUpdatePayload(snapshot.payload) ||
+    snapshot.payload.lwwUpdateMode !== 'replace'
+  )
+    return false;
+  if (other.entityType === 'TIME_TRACKING' && other.opType === OpType.Update) {
+    return (
+      other.actionType === ActionType.TIME_TRACKING_SYNC_SESSIONS ||
+      isLwwUpdatePayload(other.payload)
+    );
+  }
+  if (
+    other.entityType !== 'TASK' ||
+    other.opType !== OpType.Update ||
+    other.actionType !== ActionType.TASK_SHARED_UPDATE ||
+    getOpEntityIds(other).length !== 1 ||
+    isLwwUpdatePayload(other.payload)
+  )
+    return false;
+  const replacement = snapshot.payload.actionPayload;
+  const otherId = getOpEntityIds(other)[0];
+  const changes = mergeChangedFields([other], 'task', otherId);
+  const fields = Object.keys(changes);
+  return (
+    fields.length > 0 &&
+    fields.every(
+      (field) =>
+        field === 'modified' ||
+        (['title', 'notes', 'priority'].includes(field) &&
+          (otherId !== getOpEntityIds(snapshot)[0] ||
+            deepEqual(replacement[field], changes[field]))),
+    )
+  );
 };
 
 /** True when this non-DELETE op's field-level delta cannot be extracted. */
@@ -456,7 +505,8 @@ export const writesNoTaskTime = (
 /**
  * True when `deltaSide` is only `syncTimeSpent` deltas and every op of
  * `otherSide` is a delta too or writes no time field of the task
- * (`writesNoTaskTime`). The deltas add to whatever the other side leaves, so
+ * (`writesNoTaskTime`), including timeless patch rows checked by their keys.
+ * The deltas add to whatever the other side leaves, so
  * both apply as they are. Unlike `isDisjointMergeEligible` this admits an
  * other side holding a timeless opaque op: tracking an unscheduled task emits
  * `planTasksForToday` beside its delta, which made two devices' concurrent
@@ -471,7 +521,14 @@ const isTimeDeltaBesideTimelessOps = (
   otherSide.length > 0 &&
   deltaSide.every(isSyncTimeSpentDelta) &&
   otherSide.every(
-    (op) => isSyncTimeSpentDelta(op) || writesNoTaskTime(op, payloadKey, entityId),
+    (op) =>
+      isSyncTimeSpentDelta(op) ||
+      isTimeDeltaBesideTimelessRow({
+        localOps: deltaSide,
+        remoteOps: [op],
+        entityId,
+      }) ||
+      writesNoTaskTime(op, payloadKey, entityId),
   );
 
 const isSyncTimeSpentDelta = (op: Operation): boolean =>

@@ -119,7 +119,6 @@ import {
   aggregateEntityConflict,
   fieldPatchGroups,
   keptLocalTimeDeltas,
-  rebaseKeptTimeDeltas,
   timeDeltasSurvivingRemoteWins,
   buildSurvivingFieldPatches,
 } from './conflict-field-patch.util';
@@ -130,6 +129,11 @@ import {
   rebaseKeptReorders,
 } from './reorder-conflict.util';
 import { asPatchSnapshotIfTypeShadowed } from './lww-snapshot-patch-mode.util';
+import {
+  collectMultiEntityRemoteOpWinners,
+  selectTaskReplacementCompensations,
+  type MultiEntityRemoteOpWinners,
+} from './lww-compensation-selection.util';
 import { selectPlannerState } from '../../features/planner/store/planner.selectors';
 
 /**
@@ -148,16 +152,6 @@ interface MergedResolution {
   mergedOps: Operation[];
   /** The planner's side-level winner, for the content banner only. */
   winner: 'local' | 'remote';
-}
-
-interface MultiEntityRemoteOpWinners {
-  op: Operation;
-  hasLocalWinner: boolean;
-  hasRemoteWinner: boolean;
-  localWinnerKeys: Set<string>;
-  resolvedEntityKeys: Set<string>;
-  localWinOpIds: Set<string>;
-  remoteWinCompensationIds: Set<string>;
 }
 
 const taskRelationshipPatch = (
@@ -1030,7 +1024,7 @@ export class ConflictResolutionService {
       ...additionalLocalIntentOps,
     ]);
     const { remoteWinnerAffectedEntityKeys } = lwwPartitions;
-    // A patched conflict's local time deltas stay pending (rebased in STEP 3b),
+    // A patched conflict's local time deltas stay pending with immutable identity,
     // and so do those beside a remote winner that writes no time (#10378).
     const keptDeltas = keptLocalTimeDeltas([
       ...mergedResolutions.map((m) => m.conflict),
@@ -1051,52 +1045,9 @@ export class ConflictResolutionService {
     // local-win snapshots after it as compensations. The remote row stays pending
     // until reducer and archive application complete; status-blind hydration then
     // replays the same deterministic sequence after a crash.
-    const multiEntityRemoteOpWinners = new Map<string, MultiEntityRemoteOpWinners>();
+    const multiEntityRemoteOpWinners = collectMultiEntityRemoteOpWinners(resolutions);
     const compensatedRemoteOps = new Map<string, Operation>();
     const compensationOpIdsToApply = new Set<string>();
-    for (const resolution of resolutions) {
-      for (const remoteOp of resolution.conflict.remoteOps) {
-        if (getOpEntityIds(remoteOp).length <= 1) {
-          continue;
-        }
-        const winners = multiEntityRemoteOpWinners.get(remoteOp.id) ?? {
-          op: remoteOp,
-          hasLocalWinner: false,
-          hasRemoteWinner: false,
-          localWinnerKeys: new Set<string>(),
-          resolvedEntityKeys: new Set<string>(),
-          localWinOpIds: new Set<string>(),
-          remoteWinCompensationIds: new Set<string>(),
-        };
-        winners.resolvedEntityKeys.add(
-          toEntityKey(resolution.conflict.entityType, resolution.conflict.entityId),
-        );
-        if (resolution.winner === 'local') {
-          winners.hasLocalWinner = true;
-          winners.localWinnerKeys.add(
-            toEntityKey(resolution.conflict.entityType, resolution.conflict.entityId),
-          );
-          if (resolution.localWinOp) {
-            winners.localWinOpIds.add(resolution.localWinOp.id);
-          }
-        } else {
-          winners.hasRemoteWinner = true;
-        }
-        multiEntityRemoteOpWinners.set(remoteOp.id, winners);
-      }
-    }
-
-    // Conflict detection reports only entities that actually conflict. Every
-    // other entity touched by the same remote atomic action is therefore an
-    // uncontested remote winner and must keep the original op eligible for
-    // apply. Without this, one local-winning sibling suppresses the remote
-    // change for every unaffected sibling.
-    for (const winners of multiEntityRemoteOpWinners.values()) {
-      winners.hasRemoteWinner ||= getOpEntityIds(winners.op).some(
-        (entityId) =>
-          !winners.resolvedEntityKeys.has(toEntityKey(winners.op.entityType, entityId)),
-      );
-    }
 
     // A remote UPDATE that wins over a local DELETE needs a durable recreate
     // snapshot because the original update reducer cannot recreate a missing
@@ -1224,6 +1175,13 @@ export class ConflictResolutionService {
         compensatedRemoteOps.set(remoteOp.id, remoteOp);
         remoteWinsOps = remoteWinsOps.filter((op) => op.id !== remoteOp.id);
       }
+    }
+
+    for (const { remoteOp, localWinOpId } of selectTaskReplacementCompensations(
+      resolutions,
+    )) {
+      compensatedRemoteOps.set(remoteOp.id, remoteOp);
+      compensationOpIdsToApply.add(localWinOpId);
     }
 
     const newLocalWinOpsById = new Map(newLocalWinOps.map((op) => [op.id, op]));
@@ -1461,7 +1419,6 @@ export class ConflictResolutionService {
     // ─────────────────────────────────────────────────────────────────────────
     const resendOps = mergedResolutions.flatMap((merged) => merged.mergedOps);
     const resendIds = new Set(resendOps.map((op) => op.id));
-    let writtenResendIds: string[] = [];
     const hasLocalResolutionOps =
       newLocalWinOps.length > 0 ||
       localMultiReconciliationOps.length > 0 ||
@@ -1548,7 +1505,6 @@ export class ConflictResolutionService {
           });
         }
       }
-      writtenResendIds = writtenResends.map((entry) => entry.op.id);
       // Apply/upload the WRITTEN re-sends: they carry the rebased clocks.
       for (const { op } of writtenResends) {
         checkpointExemptOpIds.add(op.id);
@@ -1628,9 +1584,6 @@ export class ConflictResolutionService {
           localOpsToRejectSet.add(op.id);
         }
       }
-    }
-    if (keptDeltas.opIds.size > 0) {
-      await rebaseKeptTimeDeltas(this.opLogStore, keptDeltas, writtenResendIds);
     }
 
     await rebaseKeptReorders(this.opLogStore, keptReorders, new Set(remoteOpsToReject));
