@@ -1,12 +1,20 @@
-import { Directive, ElementRef, HostListener, Input, Renderer2 } from '@angular/core';
+import {
+  Directive,
+  ElementRef,
+  HostListener,
+  inject,
+  input,
+  Renderer2,
+} from '@angular/core';
 import { getCoords } from './get-coords';
 
 const LARGE_IMG_ID = 'enlarged-img';
 
-@Directive({
-  selector: '[enlargeImg]',
-})
+@Directive({ selector: '[enlargeImg]' })
 export class EnlargeImgDirective {
+  private _renderer = inject(Renderer2);
+  private _el = inject(ElementRef);
+
   imageEl: HTMLElement;
   newImageEl?: HTMLElement;
   lightboxParentEl: HTMLElement = document.body;
@@ -15,16 +23,16 @@ export class EnlargeImgDirective {
   zoomMode: number = 0;
   zoomMoveHandler?: (ev: MouseEvent) => void;
 
-  @Input() enlargeImg?: string;
+  readonly enlargeImg = input<string>();
 
-  constructor(private _renderer: Renderer2, private _el: ElementRef) {
+  constructor() {
     this.imageEl = this._el.nativeElement;
   }
 
-  @HostListener('click', ['$event']) onClick(): void {
+  @HostListener('click') onClick(): void {
     this.isImg = this.imageEl.tagName.toLowerCase() === 'img';
 
-    if (this.isImg || this.enlargeImg) {
+    if (this.isImg || this.enlargeImg()) {
       this._showImg();
     }
   }
@@ -62,7 +70,7 @@ export class EnlargeImgDirective {
   }
 
   private _showImg(): void {
-    const src = this.enlargeImg || (this.imageEl.getAttribute('src') as string);
+    const src = this.enlargeImg() || (this.imageEl.getAttribute('src') as string);
 
     const img = new Image();
     img.src = src;
@@ -84,9 +92,15 @@ export class EnlargeImgDirective {
     this.enlargedImgWrapperEl = this._htmlToElement(
       `<div class="enlarged-image-wrapper"></div>`,
     );
-    this.newImageEl = this._htmlToElement(
-      `<img src="${src}" class="enlarged-image" id=${LARGE_IMG_ID}>`,
-    );
+    // SECURITY: build the <img> via DOM properties, never innerHTML. `src` can
+    // originate from synced/imported note data (note.imgUrl); interpolating it
+    // into an HTML string let a crafted URL break out of the src attribute and
+    // inject an event handler (stored DOM-XSS). See GHSA-78rv-m663-4fph.
+    const newImageEl = document.createElement('img');
+    newImageEl.src = src;
+    newImageEl.className = 'enlarged-image';
+    newImageEl.id = LARGE_IMG_ID;
+    this.newImageEl = newImageEl;
     this._renderer.appendChild(this.enlargedImgWrapperEl, this.newImageEl);
     this._renderer.appendChild(this.lightboxParentEl, this.enlargedImgWrapperEl);
     this.zoomMode = 0;

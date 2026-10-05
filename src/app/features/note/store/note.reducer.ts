@@ -17,15 +17,12 @@ import {
 import { loadAllData } from '../../../root-store/meta/load-all-data.action';
 import { devError } from '../../../util/dev-error';
 import { WorkContextType } from '../../work-context/work-context.model';
-import { MODEL_VERSION_KEY } from '../../../app.constants';
-import { MODEL_VERSION } from '../../../core/model-version';
+import { TaskSharedActions } from '../../../root-store/meta/task-shared.actions';
 
 export const adapter: EntityAdapter<Note> = createEntityAdapter<Note>();
 
 export const initialNoteState: NoteState = adapter.getInitialState({
-  ids: [],
   todayOrder: [],
-  [MODEL_VERSION_KEY]: MODEL_VERSION.NOTE,
 });
 
 export const { selectIds, selectEntities, selectAll, selectTotal } =
@@ -71,11 +68,23 @@ const _reducer = createReducer<NoteState>(
     appDataComplete.note ? appDataComplete.note : state,
   ),
 
+  on(TaskSharedActions.deleteProject, (state, { noteIds }) => {
+    return adapter.removeMany(noteIds, {
+      ...state,
+      todayOrder: state.todayOrder.filter((idI) => !noteIds.includes(idI)),
+    });
+  }),
+
   on(updateNoteOrder, (state, { ids, activeContextType }) =>
     activeContextType !== WorkContextType.PROJECT
       ? {
           ...state,
-          noteIds: ids,
+          // A reorder changes positions, not membership. Pins added after the
+          // order was captured stay at the front, as they do when pinning last.
+          todayOrder: [
+            ...state.todayOrder.filter((id) => !ids.includes(id)),
+            ...ids.filter((id) => state.todayOrder.includes(id)),
+          ],
         }
       : state,
   ),
@@ -93,12 +102,17 @@ const _reducer = createReducer<NoteState>(
 
   on(updateNote, (state, { note }) => {
     if ('isPinnedToToday' in note.changes) {
+      // A pin prepends only an absent note: replay applies a rejected pin and
+      // then its reissue.
+      const isListed = state.todayOrder.includes(note.id as string);
       return {
         ...state,
         ...adapter.updateOne(note, state),
-        todayOrder: note.changes.isPinnedToToday
-          ? [note.id as string, ...state.todayOrder]
-          : state.todayOrder.filter((id) => id !== note.id),
+        todayOrder: !note.changes.isPinnedToToday
+          ? state.todayOrder.filter((id) => id !== note.id)
+          : isListed
+            ? state.todayOrder
+            : [note.id as string, ...state.todayOrder],
       };
     }
     return adapter.updateOne(note, state);

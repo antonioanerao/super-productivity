@@ -1,17 +1,18 @@
 import { nanoid } from 'nanoid';
-import { first, map, take, withLatestFrom } from 'rxjs/operators';
-import { Injectable } from '@angular/core';
+import typia from 'typia';
+import { distinctUntilChanged, first, map, take, withLatestFrom } from 'rxjs/operators';
+import { computed, effect, inject, Injectable, untracked } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { Observable } from 'rxjs';
 import {
   ArchiveTask,
   DEFAULT_TASK,
   DropListModelSource,
-  ShowSubTasksMode,
+  HideSubTasksMode,
   Task,
-  TaskAdditionalInfoTargetPanel,
   TaskArchive,
   TaskCopy,
-  TaskPlanned,
+  TaskDetailTargetPanel,
   TaskReminderOptionId,
   TaskState,
   TaskWithSubTasks,
@@ -19,61 +20,45 @@ import {
 import { select, Store } from '@ngrx/store';
 import {
   addSubTask,
-  addTask,
-  addTimeSpent,
-  convertToMainTask,
-  deleteTask,
-  deleteTasks,
   moveSubTask,
   moveSubTaskDown,
   moveSubTaskToBottom,
   moveSubTaskToTop,
   moveSubTaskUp,
-  moveToArchive_,
-  moveToOtherProject,
-  removeTagsForAllTasks,
   removeTimeSpent,
-  reScheduleTask,
-  restoreTask,
   roundTimeSpentForDay,
-  scheduleTask,
   setCurrentTask,
   setSelectedTask,
   toggleStart,
-  toggleTaskShowSubTasks,
-  unScheduleTask,
   unsetCurrentTask,
-  updateTask,
-  updateTaskTags,
   updateTaskUi,
 } from './store/task.actions';
-import { PersistenceService } from '../../core/persistence/persistence.service';
+import { getNextHideSubTasksMode } from './util/get-next-hide-sub-tasks-mode';
 import { IssueProviderKey } from '../issue/issue.model';
 import { GlobalTrackingIntervalService } from '../../core/global-tracking-interval/global-tracking-interval.service';
 import {
   selectAllTasks,
   selectCurrentTask,
   selectCurrentTaskId,
-  selectCurrentTaskOrParentWithData,
   selectCurrentTaskParentOrCurrent,
   selectIsTaskDataLoaded,
   selectMainTasksWithoutTag,
   selectSelectedTask,
   selectSelectedTaskId,
   selectStartableTasks,
-  selectTaskAdditionalInfoTargetPanel,
   selectTaskById,
   selectTaskByIdWithSubTaskData,
+  selectTaskDetailTargetPanel,
+  selectTaskEntities,
   selectTaskFeatureState,
-  selectTasksById,
+  selectTasksByIdFactory,
   selectTasksByRepeatConfigId,
   selectTasksByTag,
-  selectTasksPlannedForRangeNotOnToday,
   selectTaskWithSubTasksByRepeatConfigId,
+  selectTimeConflictTaskIds,
 } from './store/task.selectors';
+import { selectTodayTaskIds } from '../work-context/store/work-context.selectors';
 import { RoundTimeOption } from '../project/project.model';
-import { TagService } from '../tag/tag.service';
-import { TODAY_TAG } from '../tag/tag.const';
 import { WorkContextService } from '../work-context/work-context.service';
 import { WorkContextType } from '../work-context/work-context.model';
 import {
@@ -83,72 +68,110 @@ import {
   moveTaskToTopInTodayList,
   moveTaskUpInTodayList,
 } from '../work-context/store/work-context-meta.actions';
+import { getAnchorFromDragDrop } from '../work-context/store/work-context-meta.helper';
 import { Router } from '@angular/router';
 import { unique } from '../../util/unique';
-import { SnackService } from '../../core/snack/snack.service';
-import { ImexMetaService } from '../../imex/imex-meta/imex-meta.service';
+import { ImexViewService } from '../../imex/imex-meta/imex-view.service';
 import { remindOptionToMilliseconds } from './util/remind-option-to-milliseconds';
-import { getDateRangeForDay } from '../../util/get-date-range-for-day';
-import { ProjectService } from '../project/project.service';
 import {
   moveProjectTaskDownInBacklogList,
   moveProjectTaskInBacklogList,
   moveProjectTaskToBacklogList,
   moveProjectTaskToBottomInBacklogList,
-  moveProjectTaskToTodayList,
+  moveProjectTaskToRegularList,
   moveProjectTaskToTopInBacklogList,
   moveProjectTaskUpInBacklogList,
 } from '../project/store/project.actions';
 import { Update } from '@ngrx/entity';
-import { DateService } from 'src/app/core/date/date.service';
-import { T } from 'src/app/t.const';
+import { RootState } from '../../root-store/root-state';
+import { DateService } from '../../core/date/date.service';
+import {
+  TimeTrackingActions,
+  syncTimeSpent,
+  syncTimeTracking,
+} from '../time-tracking/store/time-tracking.actions';
+import { selectTimeTrackingState } from '../time-tracking/store/time-tracking.selectors';
+import { ArchiveService } from '../archive/archive.service';
+import { TaskArchiveService } from '../archive/task-archive.service';
+import { TODAY_TAG } from '../tag/tag.const';
+import { TaskSharedActions } from '../../root-store/meta/task-shared.actions';
+import { getDbDateStr, isDBDateStr } from '../../util/get-db-date-str';
+import { INBOX_PROJECT } from '../project/project.const';
+import { GlobalConfigService } from '../config/global-config.service';
+import { TaskLog } from '../../core/log';
+import { devError } from '../../util/dev-error';
+import { DEFAULT_GLOBAL_CONFIG } from '../config/default-global-config.const';
+import { TaskFocusService } from './task-focus.service';
+import { DeletedTaskIssueSidecarService } from '../issue/two-way-sync/deleted-task-issue-sidecar.service';
+import { TimeBlockDeleteSidecarService } from '../calendar-integration/time-block/time-block-delete-sidecar.service';
+import { getDeadlineAutoPlanFields } from './util/get-deadline-auto-plan-fields';
+import { TaskTimeSyncService } from './task-time-sync.service';
 
 @Injectable({
   providedIn: 'root',
 })
 export class TaskService {
-  // Currently used in idle service TODO remove
-  currentTaskId: string | null = null;
+  private readonly _store = inject<Store<RootState>>(Store);
+  private readonly _workContextService = inject(WorkContextService);
+  private readonly _imexMetaService = inject(ImexViewService);
+  private readonly _timeTrackingService = inject(GlobalTrackingIntervalService);
+  private readonly _dateService = inject(DateService);
+  private readonly _router = inject(Router);
+  private readonly _archiveService = inject(ArchiveService);
+  private readonly _taskArchiveService = inject(TaskArchiveService);
+  private readonly _globalConfigService = inject(GlobalConfigService);
+  private readonly _taskFocusService = inject(TaskFocusService);
+  private readonly _deletedTaskIssueSidecar = inject(DeletedTaskIssueSidecarService);
+  private readonly _timeBlockDeleteSidecar = inject(TimeBlockDeleteSidecarService);
+  private readonly _archiveTaskPromisesById = new Map<string, Promise<void>>();
+  private readonly _taskTimeSync = inject(TaskTimeSyncService);
+
   currentTaskId$: Observable<string | null> = this._store.pipe(
     select(selectCurrentTaskId),
-    // NOTE: we can't use share here, as we need the last emitted value
+    distinctUntilChanged(),
   );
+  currentTaskId = toSignal(this.currentTaskId$, { initialValue: null });
 
   currentTask$: Observable<Task | null> = this._store.pipe(
     select(selectCurrentTask),
     // NOTE: we can't use share here, as we need the last emitted value
   );
 
-  currentTaskParentOrCurrent$: Observable<Task> = this._store.pipe(
+  currentTaskParentOrCurrent$: Observable<Task | undefined> = this._store.pipe(
     select(selectCurrentTaskParentOrCurrent),
     // NOTE: we can't use share here, as we need the last emitted value
   );
 
-  selectedTaskId$: Observable<string | null> = this._store.pipe(
-    select(selectSelectedTaskId),
-    // NOTE: we can't use share here, as we need the last emitted value
+  selectedTaskId = toSignal(
+    this._store.pipe(select(selectSelectedTaskId), distinctUntilChanged()),
+    { initialValue: null },
   );
 
-  selectedTask$: Observable<TaskWithSubTasks> = this._store.pipe(
+  // Shared signal to avoid creating 200+ subscriptions in task components
+  // Uses selectTodayTaskIds which computes membership from task.dueDay (virtual tag pattern)
+  todayList = toSignal(this._store.pipe(select(selectTodayTaskIds)), {
+    initialValue: [] as string[],
+  });
+
+  // Set version for O(1) lookup - used by task components to check membership
+  todayListSet = computed(() => new Set(this.todayList()));
+
+  // Shared signal to avoid one store subscription per rendered task component
+  timeConflictTaskIds = toSignal(this._store.pipe(select(selectTimeConflictTaskIds)), {
+    initialValue: new Set<string>(),
+  });
+
+  selectedTask$: Observable<TaskWithSubTasks | null> = this._store.pipe(
     select(selectSelectedTask),
     // NOTE: we can't use share here, as we need the last emitted value
   );
 
-  firstStartableTask$: Observable<Task | undefined> =
-    this._workContextService.startableTasksForActiveContext$.pipe(
-      map((tasks) => tasks[0]),
-    );
-
-  taskAdditionalInfoTargetPanel$: Observable<TaskAdditionalInfoTargetPanel | null> =
-    this._store.pipe(
-      select(selectTaskAdditionalInfoTargetPanel),
-      // NOTE: we can't use share here, as we need the last emitted value
-    );
-
-  currentTaskOrCurrentParent$: Observable<TaskWithSubTasks | null> = this._store.pipe(
-    select(selectCurrentTaskOrParentWithData),
-    // NOTE: we can't use share here, as we need the last emitted value
+  firstStartableTask = computed(
+    () => this._workContextService.startableTasksForActiveContext()[0],
   );
+
+  taskDetailPanelTargetPanel$: Observable<TaskDetailTargetPanel | null | undefined> =
+    this._store.pipe(select(selectTaskDetailTargetPanel), distinctUntilChanged());
 
   isTaskDataLoaded$: Observable<boolean> = this._store.pipe(
     select(selectIsTaskDataLoaded),
@@ -162,20 +185,8 @@ export class TaskService {
 
   allStartableTasks$: Observable<Task[]> = this._store.pipe(select(selectStartableTasks));
 
-  // NOTE: this should work fine as long as the user restarts the app every day
-  // if not worst case is, that the buttons don't appear or today is shown as tomorrow
-  allPlannedForTodayNotOnToday$: Observable<TaskPlanned[]> = this._store.pipe(
-    select(selectTasksPlannedForRangeNotOnToday, getDateRangeForDay(Date.now())),
-  );
-
-  // NOTE: this should work fine as long as the user restarts the app every day
-  // if not worst case is, that the buttons don't appear or today is shown as tomorrow
-  allPlannedForTomorrowNotOnToday$: Observable<TaskPlanned[]> = this._store.pipe(
-    select(
-      selectTasksPlannedForRangeNotOnToday,
-      // eslint-disable-next-line no-mixed-operators
-      getDateRangeForDay(Date.now() + 24 * 60 * 60 * 1000),
-    ),
+  isTimeTrackingEnabled = computed(
+    () => this._globalConfigService.appFeatures().isTimeTrackingEnabled,
   );
 
   // META FIELDS
@@ -186,32 +197,122 @@ export class TaskService {
     ),
   );
 
+  private _lastFocusedTaskEl: HTMLElement | null = null;
   private _allTasks$: Observable<Task[]> = this._store.pipe(select(selectAllTasks));
+  private _taskEntities = this._store.selectSignal(selectTaskEntities);
 
-  constructor(
-    private readonly _store: Store<any>,
-    private readonly _persistenceService: PersistenceService,
-    private readonly _tagService: TagService,
-    private readonly _workContextService: WorkContextService,
-    private readonly _imexMetaService: ImexMetaService,
-    private readonly _snackService: SnackService,
-    private readonly _projectService: ProjectService,
-    private readonly _timeTrackingService: GlobalTrackingIntervalService,
-    private readonly _dateService: DateService,
-    private readonly _router: Router,
-  ) {
-    this.currentTaskId$.subscribe((val) => (this.currentTaskId = val));
+  private _unsyncedContexts: Map<
+    string,
+    { contextType: 'TAG' | 'PROJECT'; contextId: string; date: string }
+  > = new Map();
 
-    // time tracking
+  constructor() {
+    document.addEventListener(
+      'focus',
+      (ev) => {
+        if (
+          ev.target &&
+          ev.target instanceof HTMLElement &&
+          ev.target.tagName.toLowerCase() === 'task'
+        ) {
+          this._lastFocusedTaskEl = ev.target;
+        }
+      },
+      true,
+    );
+
+    // time tracking with batch sync
     this._timeTrackingService.tick$
       .pipe(
         withLatestFrom(this.currentTask$, this._imexMetaService.isDataImportInProgress$),
       )
       .subscribe(([tick, currentTask, isImportInProgress]) => {
-        if (currentTask && !isImportInProgress) {
+        if (currentTask?.id && !isImportInProgress) {
+          // Update local state immediately (existing behavior)
           this.addTimeSpent(currentTask, tick.duration, tick.date);
+
+          // Accumulate for batch sync
+          this._taskTimeSync.accumulate(currentTask.id, tick.duration, tick.date);
+
+          // Track contexts for TIME_TRACKING sync
+          this._trackContextsForSync(currentTask, tick.date);
+
+          // Check if it's time to sync (every 5 minutes)
+          if (this._taskTimeSync.shouldFlush()) {
+            this._flushAccumulatedTimeSpent();
+          }
         }
       });
+
+    // Flush accumulated time when task stops (currentTaskId becomes null or changes)
+    this.currentTaskId$.subscribe(() => {
+      this._flushAccumulatedTimeSpent();
+    });
+
+    effect(() => {
+      if (!this.isTimeTrackingEnabled() && untracked(this.currentTaskId) != null) {
+        this.toggleStartTask();
+      }
+    });
+  }
+
+  /**
+   * Tracks contexts (tags and project) that need TIME_TRACKING sync.
+   */
+  private _trackContextsForSync(task: Task, date: string): void {
+    // Track project context
+    if (task.projectId) {
+      const key = `PROJECT:${task.projectId}:${date}`;
+      this._unsyncedContexts.set(key, {
+        contextType: 'PROJECT',
+        contextId: task.projectId,
+        date,
+      });
+    }
+
+    // Track tag contexts (including TODAY_TAG)
+    for (const tagId of [TODAY_TAG.id, ...task.tagIds]) {
+      const key = `TAG:${tagId}:${date}`;
+      this._unsyncedContexts.set(key, {
+        contextType: 'TAG',
+        contextId: tagId,
+        date,
+      });
+    }
+  }
+
+  /**
+   * Dispatches syncTimeSpent for all accumulated time and resets accumulators.
+   */
+  private _flushAccumulatedTimeSpent(): void {
+    // Sync task.timeSpent totals
+    this._taskTimeSync.flush();
+
+    // Sync TIME_TRACKING session data (start/end times)
+    if (this._unsyncedContexts.size > 0) {
+      this._store
+        .pipe(select(selectTimeTrackingState), take(1))
+        .subscribe((timeTrackingState) => {
+          this._unsyncedContexts.forEach(({ contextType, contextId, date }) => {
+            const prop = contextType === 'TAG' ? 'tag' : 'project';
+            const data = timeTrackingState?.[prop]?.[contextId]?.[date];
+            if (data) {
+              this._store.dispatch(
+                syncTimeTracking({ contextType, contextId, date, data }),
+              );
+            }
+          });
+          this._unsyncedContexts.clear();
+        });
+    }
+  }
+
+  /**
+   * Flush accumulated time tracking data to sync.
+   * Called before app goes to background or closes.
+   */
+  flushAccumulatedTimeSpent(): void {
+    this._flushAccumulatedTimeSpent();
   }
 
   getAllParentWithoutTag$(tagId: string): Observable<Task[]> {
@@ -231,9 +332,9 @@ export class TaskService {
 
   setSelectedId(
     id: string | null,
-    taskAdditionalInfoTargetPanel: TaskAdditionalInfoTargetPanel = TaskAdditionalInfoTargetPanel.Default,
+    taskDetailTargetPanel: TaskDetailTargetPanel = TaskDetailTargetPanel.Default,
   ): void {
-    this._store.dispatch(setSelectedTask({ id, taskAdditionalInfoTargetPanel }));
+    this._store.dispatch(setSelectedTask({ id, taskDetailTargetPanel }));
   }
 
   async setSelectedIdToParentAndSwitchContextIfNecessary(task: TaskCopy): Promise<void> {
@@ -241,17 +342,19 @@ export class TaskService {
       throw new Error('No task with parent task given');
     }
     const parentTask = await this.getByIdOnce$(task.parentId).toPromise();
-    const { activeId, activeType } =
-      await this._workContextService.activeWorkContextTypeAndId$
-        .pipe(first())
-        .toPromise();
+    const activeContext = await this._workContextService.activeWorkContext$
+      .pipe(first())
+      .toPromise();
 
-    const isParentOnSameList =
-      activeType === WorkContextType.PROJECT
-        ? parentTask.projectId === activeId
-        : parentTask.tagIds.includes(activeId);
+    if (!activeContext) {
+      throw new Error('No active work context');
+    }
 
-    if (!isParentOnSameList) {
+    // Check if parent task is actually visible in the current context
+    const isParentVisibleInCurrentContext = activeContext.taskIds.includes(task.parentId);
+
+    if (!isParentVisibleInCurrentContext) {
+      // Navigate to the context where the parent task belongs
       if (parentTask.projectId) {
         await this._router.navigate([`project/${parentTask.projectId}/tasks`]);
       } else if (parentTask.tagIds[0]) {
@@ -264,7 +367,7 @@ export class TaskService {
     this._store.dispatch(
       setSelectedTask({
         id: task.parentId,
-        taskAdditionalInfoTargetPanel: TaskAdditionalInfoTargetPanel.Default,
+        taskDetailTargetPanel: TaskDetailTargetPanel.Default,
       }),
     );
   }
@@ -273,7 +376,7 @@ export class TaskService {
     this._workContextService.startableTasksForActiveContext$
       .pipe(take(1))
       .subscribe((tasks) => {
-        if (tasks[0] && !this.currentTaskId) {
+        if (tasks[0] && !this.currentTaskId()) {
           this.setCurrentId(tasks[0].id);
         }
       });
@@ -290,6 +393,11 @@ export class TaskService {
     isAddToBacklog: boolean = false,
     additional: Partial<Task> = {},
     isAddToBottom: boolean = false,
+    // Set for tasks built from untrusted/external content (e.g. an imported
+    // email subject) so the ShortSyntaxEffects don't parse #tag/@date/+project
+    // tokens out of the title. Only spread when true to keep the dispatched
+    // action byte-identical for all existing callers.
+    isIgnoreShortSyntax: boolean = false,
   ): string {
     const workContextId = this._workContextService.activeWorkContextId as string;
     const workContextType = this._workContextService
@@ -301,13 +409,21 @@ export class TaskService {
       workContextId,
     });
 
+    TaskLog.log('addTask', { taskId: task.id, workContextId, workContextType });
+
     this._store.dispatch(
-      addTask({
+      TaskSharedActions.addTask({
         task,
         workContextId,
         workContextType,
         isAddToBacklog,
         isAddToBottom,
+        ...(isIgnoreShortSyntax ? { isIgnoreShortSyntax: true } : {}),
+        ...getDeadlineAutoPlanFields(
+          this._dateService,
+          task.deadlineDay,
+          task.deadlineWithTime,
+        ),
       }),
     );
     return task && task.id;
@@ -316,77 +432,132 @@ export class TaskService {
   async addAndSchedule(
     title: string | null,
     additional: Partial<Task> = {},
-    plannedAt: number,
-    remindCfg: TaskReminderOptionId = TaskReminderOptionId.AtStart,
-  ): Promise<void> {
+    due: number,
+    remindCfg?: TaskReminderOptionId,
+  ): Promise<string> {
     const id = this.add(title, undefined, additional, undefined);
     const task = await this.getByIdOnce$(id).toPromise();
-    this.scheduleTask(task, plannedAt, remindCfg);
+    this.scheduleTask(
+      task,
+      due,
+      remindCfg ??
+        this._globalConfigService.cfg()?.reminder.defaultTaskRemindOption ??
+        DEFAULT_GLOBAL_CONFIG.reminder.defaultTaskRemindOption!,
+    );
+    return id;
   }
 
-  remove(task: TaskWithSubTasks): void {
-    this._store.dispatch(deleteTask({ task }));
-  }
-
-  removeMultipleTasks(taskIds: string[]): void {
-    this._store.dispatch(deleteTasks({ taskIds }));
-  }
-
-  update(id: string, changedFields: Partial<Task>): void {
+  addToToday(task: TaskWithSubTasks): void {
     this._store.dispatch(
-      updateTask({
-        task: { id, changes: changedFields },
+      TaskSharedActions.planTasksForToday({
+        taskIds: [task.id],
+        today: this._dateService.todayStr(),
+        startOfNextDayDiffMs: this._dateService.getStartOfNextDayDiffMs(),
       }),
     );
   }
 
-  addTodayTag(t: Task): void {
-    this.updateTags(t, [TODAY_TAG.id, ...t.tagIds], t.tagIds);
+  /**
+   * Schedules a task for today by id (same effect as the "Add to My Day"
+   * button / Schedule → Today). Used by the id-based schedule-today shortcut
+   * path so it works from views without a live `<task>` component (e.g. the
+   * Planner overdue list, which renders `<planner-task>`). (#8851)
+   */
+  scheduleForTodayById(taskId: string): void {
+    const task = this._taskEntities()[taskId];
+    this._store.dispatch(
+      TaskSharedActions.planTasksForToday({
+        taskIds: [taskId],
+        today: this._dateService.todayStr(),
+        startOfNextDayDiffMs: this._dateService.getStartOfNextDayDiffMs(),
+        parentTaskMap: task ? { [taskId]: task.parentId } : undefined,
+      }),
+    );
   }
 
-  updateTags(task: Task, newTagIds: string[], oldTagIds: string[]): void {
-    if (!task.parentId && !task.projectId && newTagIds.length === 0) {
-      this._snackService.open({
-        type: 'ERROR',
-        msg: T.F.TASK.S.LAST_TAG_DELETION_WARNING,
-      });
-      return;
+  remove(task: TaskWithSubTasks): void {
+    this._taskTimeSync.clearOne(task.id);
+    // Clear via subTaskIds (always present) not subTasks: the keyboard-delete path
+    // passes a raw Task entity whose subTasks array is undefined (see #9280).
+    task.subTaskIds.forEach((id) => this._taskTimeSync.clearOne(id));
+    this._store.dispatch(TaskSharedActions.deleteTask({ task }));
+  }
+
+  removeMultipleTasks(taskIds: string[]): void {
+    // Store issue metadata in the sidecar *before* dispatching, so the
+    // deleteIssueOnBulkTaskDelete$ effect can pick it up.
+    const entities = this._taskEntities();
+    const affectedTaskIds = Array.from(
+      new Set(taskIds.flatMap((id) => [id, ...(entities[id]?.subTaskIds ?? [])])),
+    );
+    const tasks = affectedTaskIds
+      .map((id) => entities[id])
+      .filter((task): task is Task => !!task);
+    affectedTaskIds.forEach((id) => this._taskTimeSync.clearOne(id));
+    this._deletedTaskIssueSidecar.set(
+      tasks
+        .filter((t) => !!t.issueId && !!t.issueType && !!t.issueProviderId)
+        .map((t) => ({
+          issueId: t.issueId!,
+          issueType: t.issueType!,
+          issueProviderId: t.issueProviderId!,
+        })),
+    );
+    this._timeBlockDeleteSidecar.set(
+      tasks.filter((t) => !!t.dueWithTime).map((t) => t.id),
+    );
+    this._store.dispatch(TaskSharedActions.deleteTasks({ taskIds, tasks }));
+  }
+
+  update(id: string, changedFields: Partial<Task>): void {
+    if (Object.prototype.hasOwnProperty.call(changedFields, 'timeSpentOnDay')) {
+      this._taskTimeSync.flushOne(id);
     }
 
+    const entities = this._taskEntities();
+    const task = entities[id];
+    const projectMoveSubTaskIds =
+      Object.prototype.hasOwnProperty.call(changedFields, 'projectId') &&
+      task &&
+      !task.parentId
+        ? unique([
+            ...task.subTaskIds,
+            ...Object.values(entities)
+              .filter(
+                (candidate): candidate is Task =>
+                  !!candidate && candidate.parentId === id,
+              )
+              .map((subTask) => subTask.id),
+          ])
+        : undefined;
+
     this._store.dispatch(
-      updateTaskTags({
-        task,
-        newTagIds: unique(newTagIds),
-        oldTagIds,
+      TaskSharedActions.updateTask({
+        task: { id, changes: changedFields },
+        ...(projectMoveSubTaskIds !== undefined && { projectMoveSubTaskIds }),
+      }),
+    );
+  }
+
+  updateTags(task: Task, newTagIds: string[]): void {
+    this._store.dispatch(
+      TaskSharedActions.updateTask({
+        task: {
+          id: task.id,
+          changes: {
+            tagIds: unique(newTagIds),
+          },
+        },
       }),
     );
   }
 
   removeTagsForAllTask(tagsToRemove: string[]): void {
     this._store.dispatch(
-      removeTagsForAllTasks({
+      TaskSharedActions.removeTagsForAllTasks({
         tagIdsToRemove: tagsToRemove,
       }),
     );
-  }
-
-  // TODO: Move logic away from service class (to actions)?
-  // TODO: Should this reside in tagService?
-  purgeUnusedTags(tagIds: string[]): void {
-    tagIds.forEach((tagId) => {
-      this.getTasksByTag(tagId)
-        .pipe(take(1))
-        .subscribe((tasks) => {
-          console.log(
-            `Tag is present on ${tasks.length} tasks => ${
-              tasks.length ? 'keeping...' : 'deleting...'
-            }`,
-          );
-          if (tasks.length === 0 && tagId !== TODAY_TAG.id) {
-            this._tagService.removeTag(tagId);
-          }
-        });
-    });
   }
 
   updateUi(id: string, changes: Partial<Task>): void {
@@ -411,10 +582,11 @@ export class TaskService {
       // move inside today
       const workContextType = this._workContextService
         .activeWorkContextType as WorkContextType;
+      const afterTaskId = getAnchorFromDragDrop(taskId, newOrderedIds);
       this._store.dispatch(
         moveTaskInTodayList({
           taskId,
-          newOrderedIds,
+          afterTaskId,
           src,
           target,
           workContextId,
@@ -423,23 +595,33 @@ export class TaskService {
       );
     } else if (src === 'BACKLOG' && target === 'BACKLOG') {
       // move inside backlog
+      const afterTaskId = getAnchorFromDragDrop(taskId, newOrderedIds);
       this._store.dispatch(
-        moveProjectTaskInBacklogList({ taskId, newOrderedIds, workContextId }),
+        moveProjectTaskInBacklogList({ taskId, afterTaskId, workContextId }),
       );
     } else if (src === 'BACKLOG' && isTargetTodayList) {
       // move from backlog to today
+      const afterTaskId = getAnchorFromDragDrop(taskId, newOrderedIds);
       this._store.dispatch(
-        moveProjectTaskToTodayList({ taskId, newOrderedIds, src, target, workContextId }),
+        moveProjectTaskToRegularList({
+          taskId,
+          afterTaskId,
+          src,
+          target,
+          workContextId,
+        }),
       );
     } else if (isSrcTodayList && target === 'BACKLOG') {
       // move from today to backlog
+      const afterTaskId = getAnchorFromDragDrop(taskId, newOrderedIds);
       this._store.dispatch(
-        moveProjectTaskToBacklogList({ taskId, newOrderedIds, workContextId }),
+        moveProjectTaskToBacklogList({ taskId, afterTaskId, workContextId }),
       );
     } else {
       // move sub task
+      const afterTaskId = getAnchorFromDragDrop(taskId, newOrderedIds);
       this._store.dispatch(
-        moveSubTask({ taskId, srcTaskId: src, targetTaskId: target, newOrderedIds }),
+        moveSubTask({ taskId, srcTaskId: src, targetTaskId: target, afterTaskId }),
       );
     }
   }
@@ -450,7 +632,7 @@ export class TaskService {
     isBacklog: boolean,
   ): Promise<void> {
     const allMainTaskIds = [
-      ...(await this._workContextService.todaysTaskIds$.pipe(first()).toPromise()),
+      ...(await this._workContextService.mainListTaskIds$.pipe(first()).toPromise()),
       ...(await this._workContextService.backlogTaskIds$.pipe(first()).toPromise()),
     ];
     const isSubTaskAsMain = parentId && allMainTaskIds.includes(id);
@@ -468,21 +650,21 @@ export class TaskService {
         .activeWorkContextType as WorkContextType;
 
       if (isBacklog) {
-        const doneBacklogTaskIds = await this._workContextService.doneBacklogTaskIds$
+        const undoneBacklogTaskIds = await this._workContextService.undoneBacklogTaskIds$
           .pipe(take(1))
           .toPromise();
-        if (!doneBacklogTaskIds) {
-          throw new Error('No doneBacklogTaskIds found');
+        if (!undoneBacklogTaskIds) {
+          throw new Error('No undoneBacklogTaskIds found');
         }
         this._store.dispatch(
           moveProjectTaskUpInBacklogList({
             taskId: id,
             workContextId,
-            doneBacklogTaskIds,
+            doneBacklogTaskIds: undoneBacklogTaskIds,
           }),
         );
       } else {
-        const doneTaskIds = await this._workContextService.doneTaskIds$
+        const undoneTaskIds = await this._workContextService.undoneTaskIds$
           .pipe(take(1))
           .toPromise();
         this._store.dispatch(
@@ -490,7 +672,7 @@ export class TaskService {
             taskId: id,
             workContextType,
             workContextId,
-            doneTaskIds,
+            doneTaskIds: undoneTaskIds,
           }),
         );
       }
@@ -503,7 +685,7 @@ export class TaskService {
     isBacklog: boolean,
   ): Promise<void> {
     const allMainTaskIds = [
-      ...(await this._workContextService.todaysTaskIds$.pipe(first()).toPromise()),
+      ...(await this._workContextService.mainListTaskIds$.pipe(first()).toPromise()),
       ...(await this._workContextService.backlogTaskIds$.pipe(first()).toPromise()),
     ];
     const isSubTaskAsMain = parentId && allMainTaskIds.includes(id);
@@ -522,21 +704,21 @@ export class TaskService {
 
       // this.
       if (isBacklog) {
-        const doneBacklogTaskIds = await this._workContextService.doneBacklogTaskIds$
+        const undoneBacklogTaskIds = await this._workContextService.undoneBacklogTaskIds$
           .pipe(take(1))
           .toPromise();
-        if (!doneBacklogTaskIds) {
-          throw new Error('No doneBacklogTaskIds found');
+        if (!undoneBacklogTaskIds) {
+          throw new Error('No undoneBacklogTaskIds found');
         }
         this._store.dispatch(
           moveProjectTaskDownInBacklogList({
             taskId: id,
             workContextId,
-            doneBacklogTaskIds,
+            doneBacklogTaskIds: undoneBacklogTaskIds,
           }),
         );
       } else {
-        const doneTaskIds = await this._workContextService.doneTaskIds$
+        const undoneTaskIds = await this._workContextService.undoneTaskIds$
           .pipe(take(1))
           .toPromise();
         this._store.dispatch(
@@ -544,7 +726,7 @@ export class TaskService {
             taskId: id,
             workContextType,
             workContextId,
-            doneTaskIds,
+            doneTaskIds: undoneTaskIds,
           }),
         );
       }
@@ -560,31 +742,33 @@ export class TaskService {
         .activeWorkContextType as WorkContextType;
 
       if (isBacklog) {
-        this._workContextService.doneBacklogTaskIds$
+        this._workContextService.undoneBacklogTaskIds$
           .pipe(take(1))
-          .subscribe((doneBacklogTaskIds) => {
-            if (!doneBacklogTaskIds) {
-              throw new Error('No doneBacklogTaskIds found');
+          .subscribe((undoneBacklogTaskIds) => {
+            if (!undoneBacklogTaskIds) {
+              throw new Error('No undoneBacklogTaskIds found');
             }
             this._store.dispatch(
               moveProjectTaskToTopInBacklogList({
                 taskId: id,
                 workContextId,
-                doneBacklogTaskIds,
+                doneBacklogTaskIds: undoneBacklogTaskIds,
               }),
             );
           });
       } else {
-        this._workContextService.doneTaskIds$.pipe(take(1)).subscribe((doneTaskIds) => {
-          this._store.dispatch(
-            moveTaskToTopInTodayList({
-              taskId: id,
-              workContextType,
-              workContextId,
-              doneTaskIds,
-            }),
-          );
-        });
+        this._workContextService.undoneTaskIds$
+          .pipe(take(1))
+          .subscribe((undoneTaskIds) => {
+            this._store.dispatch(
+              moveTaskToTopInTodayList({
+                taskId: id,
+                workContextType,
+                workContextId,
+                doneTaskIds: undoneTaskIds,
+              }),
+            );
+          });
       }
     }
   }
@@ -598,50 +782,131 @@ export class TaskService {
         .activeWorkContextType as WorkContextType;
 
       if (isBacklog) {
-        this._workContextService.doneBacklogTaskIds$
+        this._workContextService.undoneBacklogTaskIds$
           .pipe(take(1))
-          .subscribe((doneBacklogTaskIds) => {
-            if (!doneBacklogTaskIds) {
-              throw new Error('No doneBacklogTaskIds found');
+          .subscribe((undoneBacklogTaskIds) => {
+            if (!undoneBacklogTaskIds) {
+              throw new Error('No undoneBacklogTaskIds found');
             }
             this._store.dispatch(
               moveProjectTaskToBottomInBacklogList({
                 taskId: id,
                 workContextId,
-                doneBacklogTaskIds,
+                doneBacklogTaskIds: undoneBacklogTaskIds,
               }),
             );
           });
       } else {
-        this._workContextService.doneTaskIds$.pipe(take(1)).subscribe((doneTaskIds) => {
-          this._store.dispatch(
-            moveTaskToBottomInTodayList({
-              taskId: id,
-              workContextType,
-              workContextId,
-              doneTaskIds,
-            }),
-          );
-        });
+        this._workContextService.undoneTaskIds$
+          .pipe(take(1))
+          .subscribe((undoneTaskIds) => {
+            this._store.dispatch(
+              moveTaskToBottomInTodayList({
+                taskId: id,
+                workContextType,
+                workContextId,
+                doneTaskIds: undoneTaskIds,
+              }),
+            );
+          });
       }
     }
   }
 
-  addSubTaskTo(parentId: string): void {
+  addSubTaskTo(parentId: string, additional: Partial<Task> = {}): string {
+    const task = this.createNewTaskWithDefaults({
+      title: additional.title || '',
+      additional: { dueDay: additional.dueDay || undefined, ...additional },
+    });
+    TaskLog.log('addSubTaskTo', { taskId: task.id, parentId });
+
     this._store.dispatch(
       addSubTask({
-        task: this.createNewTaskWithDefaults({ title: '' }),
+        task,
         parentId,
       }),
     );
+
+    if (!task.title?.trim().length) {
+      this.focusTaskById(task.id, true);
+    }
+
+    return task.id;
+  }
+
+  /**
+   * Focus a task element by id, deferred via double-RAF so it runs after
+   * Angular renders the next frame. When `shouldStartEditing` is true and
+   * the task's title is empty at the time of focus, also enter title edit
+   * mode. Used both by newly-created tasks and by callers that want to
+   * focus an existing task (e.g. an empty sibling on Mod+Enter).
+   */
+  focusTaskById(taskId: string, shouldStartEditing: boolean): void {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        // Prefer the in-panel instance when both the main list and the side
+        // detail panel render the same task (e.g. a just-created sub-task in
+        // the parent's sub-task list). Focusing the panel copy preserves the
+        // user's current context (parent stays selected) and on mobile lands
+        // on a visible input rather than the main-list copy that the panel
+        // overlays (#7120). Fall back to an earlier copy when the last one
+        // can't take focus — e.g. the side panel's sub-task section is
+        // collapsed, so its copy is in the DOM but not focusable.
+        const allEls = document.querySelectorAll<HTMLElement>(`#t-${CSS.escape(taskId)}`);
+        let taskElement: HTMLElement | undefined;
+        for (let i = allEls.length - 1; i >= 0; i--) {
+          allEls[i].focus();
+          if (document.activeElement === allEls[i]) {
+            taskElement = allEls[i];
+            break;
+          }
+        }
+        if (!taskElement) return;
+
+        if (shouldStartEditing) {
+          const taskComponent = this._taskFocusService.lastFocusedTaskComponent();
+          if (
+            taskComponent &&
+            taskComponent.task().id === taskId &&
+            !taskComponent.task().title?.trim().length
+          ) {
+            taskComponent.focusTitleForEdit();
+          }
+        }
+      });
+    });
   }
 
   addTimeSpent(
     task: Task,
     duration: number,
     date: string = this._dateService.todayStr(),
+    isFromTrackingReminder = false,
   ): void {
-    this._store.dispatch(addTimeSpent({ task, date, duration }));
+    this._store.dispatch(
+      TimeTrackingActions.addTimeSpent({ task, date, duration, isFromTrackingReminder }),
+    );
+  }
+
+  /**
+   * Adds time spent to a task AND dispatches the persistent syncTimeSpent action.
+   * Use this instead of addTimeSpent when the caller is NOT using BatchedTimeSyncAccumulator
+   * (e.g. idle dialog, tracking reminder). The tick path uses the accumulator instead.
+   */
+  addTimeSpentAndSync(task: Task, duration: number): void {
+    if (duration <= 0) {
+      return;
+    }
+    this._taskTimeSync.flushOne(task.id);
+    const date = this._dateService.todayStr();
+    this.addTimeSpent(task, duration, date);
+    this._store.dispatch(
+      syncTimeSpent({
+        taskId: task.id,
+        date,
+        duration,
+      }),
+    );
   }
 
   removeTimeSpent(
@@ -649,6 +914,7 @@ export class TaskService {
     duration: number,
     date: string = this._dateService.todayStr(),
   ): void {
+    this._taskTimeSync.flushOne(id);
     this._store.dispatch(removeTimeSpent({ id, date, duration }));
   }
 
@@ -658,6 +924,12 @@ export class TaskService {
       throw new Error('Cannot find focus el');
     }
     el.focus();
+  }
+
+  focusLastFocusedTask(): void {
+    if (this._lastFocusedTaskEl) {
+      this._lastFocusedTaskEl.focus();
+    }
   }
 
   focusTaskIfPossible(id: string): void {
@@ -675,43 +947,158 @@ export class TaskService {
     }
   }
 
-  moveToArchive(tasks: TaskWithSubTasks | TaskWithSubTasks[]): void {
+  async moveToArchive(tasks: TaskWithSubTasks | TaskWithSubTasks[]): Promise<void> {
+    if (!tasks) {
+      TaskLog.err('[TaskService] moveToArchive called with null/undefined tasks');
+      return;
+    }
+
     if (!Array.isArray(tasks)) {
+      TaskLog.warn('[TaskService] moveToArchive converting single task to array', {
+        id: tasks.id,
+      });
       tasks = [tasks];
     }
-    // NOTE: we only update real parents since otherwise we move sub-tasks without their parent into the archive
-    const subTasks = tasks.filter((t) => t.parentId);
+
+    if (!tasks.length) {
+      TaskLog.log('[TaskService] No tasks to archive');
+      return;
+    }
+
+    TaskLog.log('[TaskService] moveToArchive called with:', {
+      count: tasks.length,
+      taskIds: tasks.map((t) => t?.id),
+      tasksType: typeof tasks,
+      isArray: Array.isArray(tasks),
+    });
+
+    // NOTE: malformed tasks (missing/invalid ids) are dropped inside archive.service
+    // via sanitizeTasksForArchiving, which also covers writeTasksToArchiveForRemoteSync.
+    // We only update real parents here since otherwise we'd move sub-tasks without
+    // their parent into the archive.
+    const subTasks = tasks.filter((t) => t?.parentId);
+    const parentTasks = tasks.filter((t) => t && !t.parentId);
+
+    TaskLog.log('[TaskService] Filtered tasks:', {
+      parentTasks: parentTasks.map((t) => t.id),
+      subTasks: subTasks.map((t) => t.id),
+    });
+
     if (subTasks.length) {
       if (this._workContextService.activeWorkContextType !== WorkContextType.TAG) {
-        throw new Error('Trying to move sub tasks into archive for project');
+        // this should be handled by moving parentTasks to archive
+        devError('Trying to move sub tasks into archive for project');
+      } else {
+        // when on a tag such as today, we simply remove the tag instead of attempting to move to archive
+        const tagToRemove = this._workContextService.activeWorkContextId;
+        // eslint-disable-next-line local-rules/no-user-content-in-logs -- grandfathered log baseline (2026-09), not yet triaged
+        TaskLog.log('[TaskService] Removing tag from subtasks:', tagToRemove);
+        subTasks.forEach((st) => {
+          this.updateTags(
+            st,
+            st.tagIds.filter((tid) => tid !== tagToRemove),
+          );
+        });
+      }
+    }
+
+    const parentTasksToArchive: TaskWithSubTasks[] = [];
+    const reservedTaskIds = new Set<string>();
+    const existingArchivePromises = new Set<Promise<void>>();
+    for (const task of parentTasks) {
+      if (task.id) {
+        const existingArchivePromise = this._archiveTaskPromisesById.get(task.id);
+        if (existingArchivePromise) {
+          TaskLog.log('[TaskService] Archive already in progress', { id: task.id });
+          existingArchivePromises.add(existingArchivePromise);
+          continue;
+        }
+        if (reservedTaskIds.has(task.id)) {
+          continue;
+        }
+        reservedTaskIds.add(task.id);
+      }
+      parentTasksToArchive.push(task);
+    }
+
+    if (parentTasksToArchive.length) {
+      // Only move parent tasks to archive, never subtasks
+      // Note: Full task payload required for sync - see docs/sync-and-op-log/operation-log-architecture.md
+      // Persist first: dispatch removes the tasks from NgRx and makes the captured
+      // operation eligible for a full-state snapshot. If archive persistence were
+      // still in flight, that snapshot could acknowledge the operation while
+      // omitting its archived task data.
+      const archivePromise = (async (): Promise<void> => {
+        TaskLog.log('[TaskService] Calling archive service to persist tasks');
+        await this._archiveService.moveTasksToArchiveAndFlushArchiveIfDue(
+          parentTasksToArchive,
+        );
+        TaskLog.log('[TaskService] Dispatching moveToArchive action for parent tasks');
+        this._store.dispatch(
+          TaskSharedActions.moveToArchive({ tasks: parentTasksToArchive }),
+        );
+        TaskLog.log('[TaskService] Archive operation completed successfully');
+      })();
+      for (const taskId of reservedTaskIds) {
+        this._archiveTaskPromisesById.set(taskId, archivePromise);
       }
 
-      // when on a tag such as today, we simply remove the tag instead of attempting to move to archive
-      const tagToRemove = this._workContextService.activeWorkContextId;
-      subTasks.forEach((st) => {
-        this.updateTags(
-          st,
-          st.tagIds.filter((tid) => tid !== tagToRemove),
-          st.tagIds,
-        );
-      });
+      try {
+        await Promise.all([...existingArchivePromises, archivePromise]);
+      } finally {
+        for (const taskId of reservedTaskIds) {
+          if (this._archiveTaskPromisesById.get(taskId) === archivePromise) {
+            this._archiveTaskPromisesById.delete(taskId);
+          }
+        }
+      }
+    } else if (existingArchivePromises.size > 0) {
+      // A duplicate caller observes the same success/failure and does not return
+      // before the durable archive write plus NgRx removal have completed.
+      await Promise.all(existingArchivePromises);
+    } else {
+      TaskLog.log('[TaskService] No parent tasks to archive');
     }
-    this._store.dispatch(moveToArchive_({ tasks: tasks.filter((t) => !t.parentId) }));
   }
 
   moveToProject(task: TaskWithSubTasks, projectId: string): void {
-    if (!!task.parentId || (!!task.issueId && task.issueType !== 'CALENDAR')) {
+    if (!!task.parentId) {
       throw new Error('Wrong task model');
     }
-    this._store.dispatch(moveToOtherProject({ task, targetProjectId: projectId }));
+    this._store.dispatch(
+      TaskSharedActions.moveToOtherProject({ task, targetProjectId: projectId }),
+    );
+  }
+
+  moveToCurrentWorkContext(task: TaskWithSubTasks | Task): void {
+    if (this._workContextService.activeWorkContextType === WorkContextType.TAG) {
+      if (this._workContextService.activeWorkContextId === TODAY_TAG.id) {
+        this._store.dispatch(
+          TaskSharedActions.planTasksForToday({
+            taskIds: [task.id],
+            today: this._dateService.todayStr(),
+            startOfNextDayDiffMs: this._dateService.getStartOfNextDayDiffMs(),
+          }),
+        );
+      } else {
+        this.updateTags(task, [this._workContextService.activeWorkContextId as string]);
+      }
+    } else {
+      if (!('subTasks' in task)) {
+        throw new Error('Wrong task model');
+      }
+      this.moveToProject(task, this._workContextService.activeWorkContextId as string);
+    }
   }
 
   toggleStartTask(): void {
-    this._store.dispatch(toggleStart());
+    if (this.isTimeTrackingEnabled() || this.currentTaskId() != null) {
+      this._store.dispatch(toggleStart());
+    }
   }
 
   restoreTask(task: Task, subTasks: Task[]): void {
-    this._store.dispatch(restoreTask({ task, subTasks }));
+    this._store.dispatch(TaskSharedActions.restoreTask({ task, subTasks }));
   }
 
   async roundTimeSpentForDayEverywhere({
@@ -741,35 +1128,34 @@ export class TaskService {
     });
 
     // today
+    todayIds.forEach((taskId) => this._taskTimeSync.flushOne(taskId));
     this._store.dispatch(
       roundTimeSpentForDay({ day, taskIds: todayIds, roundTo, isRoundUp, projectId }),
     );
 
     // archive
-    await this._persistenceService.taskArchive.execAction(
-      roundTimeSpentForDay({ day, taskIds: archivedIds, roundTo, isRoundUp, projectId }),
-    );
+    await this._taskArchiveService.roundTimeSpent({
+      day,
+      taskIds: archivedIds,
+      roundTo,
+      isRoundUp,
+      projectId,
+    });
   }
 
   // REMINDER
   // --------
   scheduleTask(
     task: Task | TaskWithSubTasks,
-    plannedAt: number,
+    due: number,
     remindCfg: TaskReminderOptionId,
     isMoveToBacklog: boolean = false,
   ): void {
-    console.log(remindOptionToMilliseconds(plannedAt, remindCfg), plannedAt);
-    console.log((remindOptionToMilliseconds(plannedAt, remindCfg) as number) - plannedAt);
-    console.log({
-      plannedAt,
-      remindCfg,
-    });
     this._store.dispatch(
-      scheduleTask({
+      TaskSharedActions.scheduleTaskWithTime({
         task,
-        plannedAt,
-        remindAt: remindOptionToMilliseconds(plannedAt, remindCfg),
+        dueWithTime: due,
+        remindAt: remindOptionToMilliseconds(due, remindCfg),
         isMoveToBacklog,
       }),
     );
@@ -777,33 +1163,25 @@ export class TaskService {
 
   reScheduleTask({
     task,
-    plannedAt,
+    due,
     remindCfg,
     isMoveToBacklog = false,
   }: {
     task: Task;
-    plannedAt: number;
+    due: number;
     remindCfg: TaskReminderOptionId;
     isMoveToBacklog: boolean;
   }): void {
     this._store.dispatch(
-      reScheduleTask({
+      TaskSharedActions.reScheduleTaskWithTime({
         task,
-        plannedAt,
-        remindAt: remindOptionToMilliseconds(plannedAt, remindCfg),
+        dueWithTime: due,
+        remindAt: remindOptionToMilliseconds(due, remindCfg),
         isMoveToBacklog,
       }),
     );
   }
 
-  unScheduleTask(taskId: string, reminderId?: string, isSkipToast?: boolean): void {
-    if (!taskId) {
-      throw new Error('No task id');
-    }
-    this._store.dispatch(unScheduleTask({ id: taskId, reminderId, isSkipToast }));
-  }
-
-  // HELPER
   // ------
   getByIdOnce$(id: string): Observable<Task> {
     return this._store.pipe(select(selectTaskById, { id }), take(1));
@@ -814,10 +1192,13 @@ export class TaskService {
   }
 
   getByIdsLive$(ids: string[]): Observable<Task[]> {
-    return this._store.pipe(select(selectTasksById, { ids }));
+    // SPAP-19: fresh per-call factory selector so concurrent subscribers with
+    // different id-sets don't evict each other's memo.
+    return this._store.pipe(select(selectTasksByIdFactory(ids)));
   }
 
-  getByIdWithSubTaskData$(id: string): Observable<TaskWithSubTasks> {
+  /** Emits `undefined` for an unknown id — always check before use (#9946). */
+  getByIdWithSubTaskData$(id: string): Observable<TaskWithSubTasks | undefined> {
     return this._store.pipe(select(selectTaskByIdWithSubTaskData, { id }), take(1));
   }
 
@@ -855,8 +1236,27 @@ export class TaskService {
     this.update(id, { isDone: false });
   }
 
+  /**
+   * Toggle done state with checkmark animation.
+   * Returns the timeout handle so callers can clear it on destroy.
+   */
+  toggleDoneWithAnimation(
+    taskId: string,
+    isDone: boolean,
+    setAnimation: (animate: boolean) => void,
+  ): number | undefined {
+    if (isDone) {
+      setAnimation(false);
+      this.setUnDone(taskId);
+      return undefined;
+    } else {
+      setAnimation(true);
+      return window.setTimeout(() => this.setDone(taskId), 200);
+    }
+  }
+
   showSubTasks(id: string): void {
-    this.updateUi(id, { _showSubTasksMode: ShowSubTasksMode.Show });
+    this.updateUi(id, { _hideSubTasksMode: undefined });
   }
 
   toggleSubTaskMode(
@@ -864,16 +1264,46 @@ export class TaskService {
     isShowLess: boolean = true,
     isEndless: boolean = false,
   ): void {
-    this._store.dispatch(toggleTaskShowSubTasks({ taskId, isShowLess, isEndless }));
+    const entities = this._taskEntities();
+    const task = entities[taskId];
+    if (!task) {
+      return;
+    }
+    const subTasks = task.subTaskIds
+      .map((id) => entities[id])
+      .filter((t): t is Task => !!t);
+    const doneCount = subTasks.filter((t) => t.isDone).length;
+    // Persist the resolved absolute value via updateTaskUi (replay-safe) rather
+    // than a relative toggle command, so the collapse state survives a restart.
+    // Replaying a relative command would recompute from live state and diverge
+    // across devices. See issue #8781.
+    this.updateUi(taskId, {
+      _hideSubTasksMode: getNextHideSubTasksMode(
+        task._hideSubTasksMode,
+        doneCount,
+        subTasks.length,
+        isShowLess,
+        isEndless,
+      ),
+    });
   }
 
   hideSubTasks(id: string): void {
-    this.updateUi(id, { _showSubTasksMode: ShowSubTasksMode.HideAll });
+    this.updateUi(id, { _hideSubTasksMode: HideSubTasksMode.HideAll });
   }
 
   async convertToMainTask(task: Task): Promise<void> {
     const parent = await this.getByIdOnce$(task.parentId as string).toPromise();
-    this._store.dispatch(convertToMainTask({ task, parentTagIds: parent.tagIds }));
+    const now = Date.now();
+    this._store.dispatch(
+      TaskSharedActions.convertToMainTask({
+        task,
+        parentTagIds: parent.tagIds,
+        isPlanForToday: this._workContextService.activeWorkContextId === TODAY_TAG.id,
+        today: this._dateService.todayStr(),
+        modified: now,
+      }),
+    );
   }
 
   // GLOBAL TASK MODEL STUFF
@@ -890,106 +1320,107 @@ export class TaskService {
     }
   }
 
+  // TODO remove in favor of calling this directly
   // BEWARE: does only work for task model updates, but not the meta models
   async updateArchiveTask(id: string, changedFields: Partial<Task>): Promise<void> {
-    await this._persistenceService.taskArchive.execAction(
-      updateTask({
-        task: {
-          id,
-          changes: changedFields,
-        },
-      }),
-    );
+    return this._taskArchiveService.updateTask(id, changedFields);
   }
 
   // BEWARE: does only work for task model updates, but not the meta models
   async updateArchiveTasks(updates: Update<Task>[]): Promise<void> {
-    await this._persistenceService.taskArchive.execActions(
-      updates.map((upd) => updateTask({ task: upd })),
-    );
+    return this._taskArchiveService.updateTasks(updates);
   }
 
   async getByIdFromEverywhere(id: string, isArchive?: boolean): Promise<Task> {
     if (isArchive === undefined) {
-      return (
-        (await this._persistenceService.task.getById(id)) ||
-        (await this._persistenceService.taskArchive.getById(id))
-      );
+      const task = await this.getByIdOnce$(id).toPromise();
+      if (task) {
+        return task;
+      }
+      return await this._taskArchiveService.getById(id);
     }
 
     if (isArchive) {
-      return await this._persistenceService.taskArchive.getById(id);
+      return await this._taskArchiveService.getById(id);
     } else {
-      return await this._persistenceService.task.getById(id);
+      return await this.getByIdOnce$(id).toPromise();
     }
   }
 
   async getAllTasksForProject(projectId: string): Promise<Task[]> {
     const allTasks = await this._allTasks$.pipe(first()).toPromise();
-    const archiveTaskState: TaskArchive =
-      await this._persistenceService.taskArchive.loadState();
+    const archiveTaskState: TaskArchive = await this._taskArchiveService.load();
     const ids = (archiveTaskState && (archiveTaskState.ids as string[])) || [];
-    const archiveTasks = ids.map((id) => archiveTaskState.entities[id]);
-    return [...allTasks, ...archiveTasks].filter(
-      (task) => (task as Task).projectId === projectId,
-    ) as Task[];
+    const archiveTasks = ids
+      .map((id) => archiveTaskState.entities[id])
+      .filter((task): task is Task => !!task);
+    return [...allTasks, ...archiveTasks].filter((task) => task.projectId === projectId);
   }
 
   async getArchiveTasksForRepeatCfgId(repeatCfgId: string): Promise<Task[]> {
-    const archiveTaskState: TaskArchive =
-      await this._persistenceService.taskArchive.loadState();
+    const archiveTaskState: TaskArchive = await this._taskArchiveService.load();
     const ids = (archiveTaskState && (archiveTaskState.ids as string[])) || [];
-    const archiveTasks = ids.map((id) => archiveTaskState.entities[id]);
-    return archiveTasks.filter(
-      (task) => (task as Task).repeatCfgId === repeatCfgId,
-    ) as Task[];
+    const archiveTasks = ids
+      .map((id) => archiveTaskState.entities[id])
+      .filter((task): task is Task => !!task);
+    return archiveTasks.filter((task) => task.repeatCfgId === repeatCfgId);
   }
 
   async getArchivedTasks(): Promise<Task[]> {
-    const archiveTaskState: TaskArchive =
-      await this._persistenceService.taskArchive.loadState(true);
+    const archiveTaskState: TaskArchive = await this._taskArchiveService.load();
     const ids = (archiveTaskState && (archiveTaskState.ids as string[])) || [];
-    const archiveTasks = ids.map((id) => archiveTaskState.entities[id]) as Task[];
-    return archiveTasks;
-  }
-
-  async getAllTaskByIssueTypeForProject$(
-    projectId: string,
-    issueProviderKey: IssueProviderKey,
-  ): Promise<Task[]> {
-    const allTasks = await this.getAllTasksForProject(projectId);
-    return allTasks.filter((task) => task.issueType === issueProviderKey);
+    return ids
+      .map((id) => archiveTaskState.entities[id])
+      .filter((task): task is Task => !!task);
   }
 
   async getAllIssueIdsForProject(
     projectId: string,
     issueProviderKey: IssueProviderKey,
-  ): Promise<string[] | number[]> {
+  ): Promise<string[]> {
     const allTasks = await this.getAllTasksForProject(projectId);
     return allTasks
       .filter((task) => task.issueType === issueProviderKey)
-      .map((task) => task.issueId) as string[] | number[];
+      .map((task) => task.issueId) as string[];
   }
 
-  // TODO check with new archive
-  async checkForTaskWithIssueInProject(
+  async getAllIssueIdsForProviderEverywhere(issueProviderId: string): Promise<string[]> {
+    const allTasks = await this.getAllTasksEverywhere();
+    return allTasks
+      .filter((task) => task.issueProviderId === issueProviderId)
+      .map((task) => task.issueId) as string[];
+  }
+
+  async getAllTasksEverywhere(): Promise<Task[]> {
+    const allTasks = await this._allTasks$.pipe(first()).toPromise();
+    const archiveTaskState: TaskArchive = await this._taskArchiveService.load();
+    const ids = (archiveTaskState && (archiveTaskState.ids as string[])) || [];
+    const archiveTasks = ids
+      .map((id) => archiveTaskState.entities[id])
+      .filter((task): task is Task => !!task);
+    return [...allTasks, ...archiveTasks] as Task[];
+  }
+
+  async checkForTaskWithIssueEverywhere(
     issueId: string | number,
     issueProviderKey: IssueProviderKey,
-    projectId: string,
+    issueProviderId: string,
   ): Promise<{
     task: Task;
     subTasks: Task[] | null;
     isFromArchive: boolean;
   } | null> {
-    if (!projectId) {
-      throw new Error('No project id');
+    if (!issueProviderId) {
+      throw new Error('No issueProviderId');
     }
 
     const findTaskFn = (task: Task | ArchiveTask | undefined): boolean =>
       !!task &&
+      // NOTE: we check all, since it is theoretically possible for the same issueId to appear across issue providers
       task.issueId === issueId &&
       task.issueType === issueProviderKey &&
-      task.projectId === projectId;
+      task.issueProviderId === issueProviderId;
+
     const allTasks = (await this._allTasks$.pipe(first()).toPromise()) as Task[];
     const taskWithSameIssue: Task = allTasks.find(findTaskFn) as Task;
 
@@ -1000,8 +1431,7 @@ export class TaskService {
         subTasks: null,
       };
     } else {
-      const archiveTaskState: TaskArchive =
-        await this._persistenceService.taskArchive.loadState();
+      const archiveTaskState: TaskArchive = await this._taskArchiveService.load();
       const ids = archiveTaskState && (archiveTaskState.ids as string[]);
       if (ids) {
         const archiveTaskWithSameIssue = ids
@@ -1012,9 +1442,9 @@ export class TaskService {
           ? {
               task: archiveTaskWithSameIssue as Task,
               subTasks: archiveTaskWithSameIssue.subTaskIds
-                ? (archiveTaskWithSameIssue.subTaskIds.map(
-                    (id) => archiveTaskState.entities[id],
-                  ) as Task[])
+                ? archiveTaskWithSameIssue.subTaskIds
+                    .map((id) => archiveTaskState.entities[id])
+                    .filter((task): task is Task => !!task)
                 : null,
               isFromArchive: true,
             }
@@ -1024,52 +1454,78 @@ export class TaskService {
     }
   }
 
-  // NOTE: there is a duplicate of this in plan-tasks-tomorrow.component
-  async movePlannedTasksToToday(plannedTasks: TaskPlanned[]): Promise<unknown> {
-    return Promise.all(
-      plannedTasks.map(async (t) => {
-        if (t.parentId) {
-          if (t.projectId) {
-            this._projectService.moveTaskToTodayList(t.parentId, t.projectId);
-          }
-          // NOTE: no unsubscribe on purpose as we always want this to run until done
-          const parentTask = await this.getByIdOnce$(t.parentId).toPromise();
-          this.addTodayTag(parentTask);
-        } else {
-          if (t.projectId) {
-            this._projectService.moveTaskToTodayList(t.id, t.projectId);
-          }
-          this.addTodayTag(t);
-        }
-      }),
-    );
-  }
-
   createNewTaskWithDefaults({
     title,
+    id,
     additional = {},
     workContextType = this._workContextService.activeWorkContextType as WorkContextType,
     workContextId = this._workContextService.activeWorkContextId as string,
   }: {
     title: string | null;
+    id?: string;
     additional?: Partial<Task>;
     workContextType?: WorkContextType;
     workContextId?: string;
   }): Task {
-    return {
+    const d1 = {
       // NOTE needs to be created every time
       ...DEFAULT_TASK,
       created: Date.now(),
       title: title as string,
-      id: nanoid(),
+      id: id || nanoid(),
 
-      projectId: workContextType === WorkContextType.PROJECT ? workContextId : null,
+      ...(workContextType === WorkContextType.PROJECT
+        ? { projectId: workContextId }
+        : {
+            projectId:
+              this._globalConfigService.cfg()?.tasks?.defaultProjectId ||
+              INBOX_PROJECT.id,
+          }),
+
       tagIds:
-        workContextType === WorkContextType.TAG && !additional.parentId
+        workContextType === WorkContextType.TAG &&
+        !additional.parentId &&
+        workContextId !== TODAY_TAG.id
           ? [workContextId]
           : [],
 
+      ...(workContextId === TODAY_TAG.id &&
+      !additional.parentId &&
+      !additional.dueWithTime &&
+      !('dueDay' in additional)
+        ? { dueDay: getDbDateStr() }
+        : {}),
+
       ...additional,
     };
+
+    // Guard against corrupted date strings (#6908)
+    if (d1.dueDay && typeof d1.dueDay === 'string' && !isDBDateStr(d1.dueDay)) {
+      d1.dueDay = undefined;
+      devError('createNewTaskWithDefaults: Invalid dueDay, clearing');
+    }
+    if (
+      d1.deadlineDay &&
+      typeof d1.deadlineDay === 'string' &&
+      !isDBDateStr(d1.deadlineDay)
+    ) {
+      d1.deadlineDay = undefined;
+      devError('createNewTaskWithDefaults: Invalid deadlineDay, clearing');
+    }
+
+    if (!d1.projectId) {
+      d1.projectId =
+        workContextType === WorkContextType.PROJECT
+          ? workContextId
+          : this._globalConfigService.cfg()?.tasks?.defaultProjectId || INBOX_PROJECT.id;
+    }
+
+    // Validate that we have a valid task before returning
+    typia.assert<Task>(d1);
+
+    if (d1.projectId === undefined) {
+      return { ...d1, projectId: INBOX_PROJECT.id };
+    }
+    return d1;
   }
 }

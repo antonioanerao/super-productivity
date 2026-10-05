@@ -1,15 +1,13 @@
-@import '../../../variables';
-
 :host {
   display: block;
 
   .help-text {
-    margin-bottom: 40px;
+    margin-bottom: var(--s5);
     border-width: 2px;
     border-left: 0;
     border-right: 0;
     border-style: solid;
-    padding: 0 $s*2;
+    padding: 0 var(--s2);
   }
 
   .help-btn {
@@ -19,7 +17,7 @@
     z-index: 1;
   }
 
-  :host-context([dir=rtl]) {
+  :host-context([dir='rtl']) {
     .help-btn {
       position: absolute;
       right: unset;
@@ -28,8 +26,8 @@
   }
 
   .help-icon-wrapper {
-    margin-top: 8px;
-    margin-bottom: 8px;
+    margin-top: var(--s);
+    margin-bottom: var(--s);
     text-align: center;
   }
 }

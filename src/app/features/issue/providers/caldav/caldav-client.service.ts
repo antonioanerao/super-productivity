@@ -1,14 +1,13 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import { CaldavCfg } from './caldav.model';
 // @ts-ignore
 import DavClient, { namespaces as NS } from '@nextcloud/cdav-library';
 // @ts-ignore
 import Calendar from 'cdav-library/models/calendar';
-// @ts-ignore
-import ICAL from 'ical.js';
+import { loadIcalModule } from '../../../schedule/ical/ical-lazy-loader';
 
 import { from, Observable, throwError } from 'rxjs';
-import { CaldavIssue } from './caldav-issue/caldav-issue.model';
+import { CaldavIssue, CaldavIssueStatus } from './caldav-issue.model';
 import { CALDAV_TYPE, ISSUE_PROVIDER_HUMANIZED } from '../../issue.const';
 import { SearchResultItem } from '../../issue.model';
 import { SnackService } from '../../../../core/snack/snack.service';
@@ -16,19 +15,56 @@ import { T } from '../../../../t.const';
 import { catchError } from 'rxjs/operators';
 import { HANDLED_ERROR_PROP_STR } from '../../../../app.constants';
 import { throwHandledError } from '../../../../util/throw-handled-error';
+import { IssueLog } from '../../../../core/log';
+import { Capacitor } from '@capacitor/core';
+import { WebDavHttp } from '../../../../op-log/sync-providers/file-based/webdav/capacitor-webdav-http';
+
+/** Subset of the XMLHttpRequest surface that @nextcloud/cdav-library v1.5.3 actually uses. */
+interface XhrLike {
+  open(method: string, url: string): void;
+  send(body?: string | null): void;
+  setRequestHeader(name: string, value: string): void;
+  getResponseHeader(name: string): string | null;
+  getAllResponseHeaders(): string;
+  addEventListener(type: string, listener: (...args: unknown[]) => void): void;
+  removeEventListener(type: string, listener: (...args: unknown[]) => void): void;
+  abort(): void;
+  status: number;
+  statusText: string;
+  responseText: string;
+  response: string;
+  readyState: number;
+  onload: ((event: unknown) => void) | null;
+  onerror: ((event: unknown) => void) | null;
+  onabort: ((event: unknown) => void) | null;
+  onreadystatechange: ((event: unknown) => void) | null;
+}
 
 interface ClientCache {
   client: DavClient;
   calendars: Map<string, Calendar>;
 }
 
+interface CalendarHomeLike {
+  displayname?: string;
+  url: string;
+  findAllCalendars: () => Promise<Calendar[]>;
+}
+
+interface CalDavTaskData {
+  data: string;
+  url: string;
+  etag: string;
+  update?: () => Promise<void>;
+}
+
 @Injectable({
   providedIn: 'root',
 })
 export class CaldavClientService {
-  private _clientCache = new Map<string, ClientCache>();
+  private readonly _snackService = inject(SnackService);
 
-  constructor(private readonly _snackService: SnackService) {}
+  private _clientCache = new Map<string, ClientCache>();
 
   private static _isValidSettings(cfg: CaldavCfg): boolean {
     return (
@@ -44,15 +80,57 @@ export class CaldavClientService {
     );
   }
 
-  private static _getCalendarUriFromUrl(url: string): string {
-    if (url.endsWith('/')) {
-      url = url.substring(0, url.length - 1);
-    }
-
-    return url.substring(url.lastIndexOf('/') + 1);
+  private static _normalizeCalDavPath(value: string): string {
+    return value.replace(/\/+$/, '');
   }
 
-  private static async _getAllTodos(calendar: any, filterOpen: boolean): Promise<any> {
+  private static _getCalendarUriFromUrl(url: string): string {
+    const normalizedUrl = CaldavClientService._normalizeCalDavPath(url);
+    return normalizedUrl.substring(normalizedUrl.lastIndexOf('/') + 1);
+  }
+
+  private static _isSameCalDavPath(a: string, b: string): boolean {
+    return (
+      CaldavClientService._normalizeCalDavPath(a) ===
+      CaldavClientService._normalizeCalDavPath(b)
+    );
+  }
+
+  private static _matchesCalendarDisplayName(
+    item: { displayname?: string },
+    resource: string,
+  ): boolean {
+    return item.displayname === resource;
+  }
+
+  private static _matchesCalendarUri(item: { url: string }, resource: string): boolean {
+    return CaldavClientService._getCalendarUriFromUrl(item.url) === resource;
+  }
+
+  private static _findMatchingCalendar(
+    calendars: Calendar[],
+    resource: string,
+    calendarHome: CalendarHomeLike,
+  ): Calendar | undefined {
+    const concreteCalendars = calendars.filter(
+      (item) => !CaldavClientService._isSameCalDavPath(item.url, calendarHome.url),
+    );
+    const displayNameMatch = concreteCalendars.find((item) =>
+      CaldavClientService._matchesCalendarDisplayName(item, resource),
+    );
+
+    return (
+      displayNameMatch ??
+      concreteCalendars.find((item) =>
+        CaldavClientService._matchesCalendarUri(item, resource),
+      )
+    );
+  }
+
+  private static async _getAllTodos(
+    calendar: Calendar,
+    filterOpen: boolean,
+  ): Promise<CalDavTaskData[]> {
     const query = {
       name: [NS.IETF_CALDAV, 'comp-filter'],
       attributes: [['name', 'VCALENDAR']],
@@ -82,7 +160,10 @@ export class CaldavClientService {
     return await calendar.calendarQuery([query]);
   }
 
-  private static async _findTaskByUid(calendar: any, taskUid: string): Promise<any> {
+  private static async _findTaskByUid(
+    calendar: Calendar,
+    taskUid: string,
+  ): Promise<CalDavTaskData[]> {
     const query = {
       name: [NS.IETF_CALDAV, 'comp-filter'],
       attributes: [['name', 'VCALENDAR']],
@@ -108,31 +189,74 @@ export class CaldavClientService {
     return await calendar.calendarQuery([query]);
   }
 
-  private static _mapTask(task: any): CaldavIssue {
+  // RFC 5545 lists COMPLETED, STATUS, and PERCENT-COMPLETE as independent
+  // optional VTODO properties — a server may send any one of them alone to
+  // mark a todo done, so the COMPLETED timestamp alone misses STATUS-only
+  // todos. The poll mapping and the push dirty-check must agree on this,
+  // else reopening a STATUS-only completed todo never reaches the server.
+  private static _isTodoCompleted(todo: any): boolean {
+    return (
+      !!todo.getFirstPropertyValue('completed') ||
+      todo.getFirstPropertyValue('status') === CaldavIssueStatus.COMPLETED ||
+      +(todo.getFirstPropertyValue('percent-complete') as string) === 100
+    );
+  }
+
+  private static async _mapTask(task: CalDavTaskData): Promise<CaldavIssue> {
+    const ICAL = await loadIcalModule();
     const jCal = ICAL.parse(task.data);
     const comp = new ICAL.Component(jCal);
     const todo = comp.getFirstSubcomponent('vtodo');
 
-    let categories: string[] = [];
-    for (const cats of todo.getAllProperties('categories')) {
-      if (cats) {
-        categories = categories.concat(cats.getValues());
-      }
+    if (!todo) {
+      IssueLog.log('No todo found for CalDAV task');
+      throw new Error('No todo found for task');
     }
 
-    const completed = todo.getFirstPropertyValue('completed');
+    const categoriesProperty = todo.getAllProperties('categories')[0];
+    const categories: string[] = categoriesProperty?.getValues() || [];
+
+    const dtstart = todo.getFirstPropertyValue('dtstart') as any;
+    const due = todo.getFirstPropertyValue('due') as any;
+    const status =
+      (todo.getFirstPropertyValue('status') as CaldavIssueStatus) || undefined;
+    const percentComplete =
+      +(todo.getFirstPropertyValue('percent-complete') as string) || undefined;
 
     return {
-      id: todo.getFirstPropertyValue('uid'),
-      completed: !!completed,
+      id: todo.getFirstPropertyValue('uid') as string,
+      completed: CaldavClientService._isTodoCompleted(todo),
       item_url: task.url,
-      summary: todo.getFirstPropertyValue('summary') || '',
-      due: todo.getFirstPropertyValue('due') || '',
-      start: todo.getFirstPropertyValue('dtstart') || '',
+      summary: (todo.getFirstPropertyValue('summary') as string) || '',
+      start: dtstart?.toJSDate().getTime(),
+      isAllDay: dtstart ? dtstart.isDate === true : undefined,
+      due: due?.toJSDate().getTime(),
+      isDueAllDay: due ? due.isDate === true : undefined,
+      note: (todo.getFirstPropertyValue('description') as string) || undefined,
+      status,
+      priority: +(todo.getFirstPropertyValue('priority') as string) || undefined,
+      percent_complete: percentComplete,
+      location: todo.getFirstPropertyValue('location') as string,
       labels: categories,
-      note: todo.getFirstPropertyValue('description') || '',
       etag_hash: this._hashEtag(task.etag),
+      related_to: CaldavClientService._getParentRelatedTo(todo),
     };
+  }
+
+  /**
+   * Returns the UID referenced by the first RELATED-TO property whose RELTYPE
+   * parameter is absent or explicitly set to PARENT (RFC 5545 §3.8.4.5).
+   * CHILD and SIBLING relations are ignored so we never invert the hierarchy.
+   */
+  private static _getParentRelatedTo(todo: any): string | undefined {
+    const props = todo.getAllProperties('related-to') as any[];
+    for (const prop of props) {
+      const reltype = (prop.getParameter('reltype') as string | null) ?? 'PARENT';
+      if (reltype.toUpperCase() === 'PARENT') {
+        return (prop.getFirstValue() as string) || undefined;
+      }
+    }
+    return undefined;
   }
 
   private static _hashEtag(etag: string): number {
@@ -142,13 +266,20 @@ export class CaldavClientService {
     if (etag.length === 0) {
       return hash;
     }
-    for (i = 0; i < this.length; i++) {
+    for (i = 0; i < etag.length; i++) {
       chr = etag.charCodeAt(i);
-      hash = (hash << 5) - hash + chr; //eslint-disable-line no-bitwise
+      hash = (hash << 5) - hash + chr;
       // Convert to 32bit integer
-      hash |= 0; //eslint-disable-line no-bitwise
+      hash |= 0;
     }
     return hash;
+  }
+
+  private static _getResponseHeaderWithDavFallback(
+    name: string,
+    value: string | null,
+  ): string | null {
+    return value === null && name.toLowerCase() === 'dav' ? '' : value;
   }
 
   async _get_client(cfg: CaldavCfg): Promise<ClientCache> {
@@ -168,7 +299,7 @@ export class CaldavClientService {
 
       await client
         .connect({ enableCalDAV: true })
-        .catch((err: any) => this._handleNetErr(err));
+        .catch((err) => this._handleNetErr(err));
 
       const cache = {
         client,
@@ -180,7 +311,7 @@ export class CaldavClientService {
     }
   }
 
-  async _getCalendar(cfg: CaldavCfg): Promise<any> {
+  async _getCalendar(cfg: CaldavCfg): Promise<Calendar> {
     const clientCache = await this._get_client(cfg);
     const resource = cfg.resourceName as string;
 
@@ -188,19 +319,32 @@ export class CaldavClientService {
       return clientCache.calendars.get(resource);
     }
 
-    const calendars = await clientCache.client.calendarHomes[0]
-      .findAllCalendars()
-      .catch((err: any) => this._handleNetErr(err));
+    let lastCalendarHomeError: unknown;
 
-    const calendar = calendars.find(
-      (item: Calendar) =>
-        (item.displayname || CaldavClientService._getCalendarUriFromUrl(item.url)) ===
+    for (const calendarHome of clientCache.client.calendarHomes as CalendarHomeLike[]) {
+      const calendars = await calendarHome.findAllCalendars().catch((err: unknown) => {
+        lastCalendarHomeError = err;
+        return null;
+      });
+
+      if (!calendars) {
+        continue;
+      }
+
+      const calendar = CaldavClientService._findMatchingCalendar(
+        calendars,
         resource,
-    );
+        calendarHome,
+      );
 
-    if (calendar !== undefined) {
-      clientCache.calendars.set(resource, calendar);
-      return calendar;
+      if (calendar !== undefined) {
+        clientCache.calendars.set(resource, calendar);
+        return calendar;
+      }
+    }
+
+    if (lastCalendarHomeError) {
+      this._handleNetErr(lastCalendarHomeError);
     }
 
     this._snackService.open({
@@ -247,33 +391,52 @@ export class CaldavClientService {
   }
 
   getByIds$(ids: string[], cfg: CaldavCfg): Observable<CaldavIssue[]> {
+    const idSet = new Set(ids);
     return from(
       this._getTasks(cfg, false, false).then((tasks) =>
-        tasks.filter((task) => task.id in ids),
+        tasks.filter((task) => idSet.has(task.id)),
       ),
     ).pipe(
       catchError((err) => throwError({ [HANDLED_ERROR_PROP_STR]: 'Caldav: ' + err })),
     );
   }
 
-  updateCompletedState$(
+  updateFields$(
     caldavCfg: CaldavCfg,
     issueId: string,
-    completed: boolean,
-  ): Observable<any> {
-    return from(this._updateCompletedState(caldavCfg, issueId, completed)).pipe(
+    fields: { completed?: boolean; summary?: string; note?: string },
+  ): Observable<void> {
+    return from(this._updateTask(caldavCfg, issueId, fields)).pipe(
       catchError((err) => throwError({ [HANDLED_ERROR_PROP_STR]: 'Caldav: ' + err })),
     );
   }
 
-  private _getXhrProvider(cfg: CaldavCfg): any {
+  protected get isNativePlatform(): boolean {
+    return Capacitor.isNativePlatform();
+  }
+
+  protected _webDavRequest(options: {
+    url: string;
+    method: string;
+    headers?: Record<string, string>;
+    data?: string;
+  }): Promise<{ status: number; headers: Record<string, string>; data: string }> {
+    return WebDavHttp.request(options);
+  }
+
+  private _getXhrProvider(cfg: CaldavCfg): () => XMLHttpRequest {
+    if (this.isNativePlatform) {
+      return this._getNativeXhrProvider(cfg);
+    }
+
     // eslint-disable-next-line prefer-arrow/prefer-arrow-functions
     function xhrProvider(): XMLHttpRequest {
       const xhr = new XMLHttpRequest();
       const oldOpen = xhr.open;
+      const oldGetResponseHeader = xhr.getResponseHeader;
 
       // override open() method to add headers
-      // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
+
       xhr.open = function (): void {
         // @ts-ignore
         // eslint-disable-next-line prefer-rest-params
@@ -286,13 +449,143 @@ export class CaldavClientService {
         );
         return result;
       };
+      xhr.getResponseHeader = function (
+        this: XMLHttpRequest,
+        name: string,
+      ): string | null {
+        return CaldavClientService._getResponseHeaderWithDavFallback(
+          name,
+          oldGetResponseHeader.call(this, name),
+        );
+      };
       return xhr;
     }
 
     return xhrProvider;
   }
 
-  private _handleNetErr(err: any): void {
+  // On native platforms (Android WebView, iOS WKWebView), XHR is blocked by
+  // CORS. We use the native WebDavHttp Capacitor plugin (OkHttp / URLSession)
+  // which bypasses the WebView's CORS restrictions.
+  private _getNativeXhrProvider(cfg: CaldavCfg): () => XMLHttpRequest {
+    return (): XMLHttpRequest => {
+      const headers: Record<string, string> = {
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        'X-Requested-With': 'SuperProductivity',
+        Authorization: 'Basic ' + btoa(cfg.username + ':' + cfg.password),
+      };
+      let method = 'GET';
+      let url = '';
+      let aborted = false;
+      const responseHeaders: Record<string, string> = {};
+      const eventListeners = new Map<string, ((...args: unknown[]) => void)[]>();
+
+      const fakeXhr: XhrLike = {
+        status: 0,
+        statusText: '',
+        responseText: '',
+        response: '',
+        readyState: 0,
+        onload: null,
+        onerror: null,
+        onabort: null,
+        onreadystatechange: null,
+
+        open: (m: string, u: string): void => {
+          method = m;
+          url = u;
+          fakeXhr.readyState = 1;
+        },
+
+        setRequestHeader: (name: string, value: string): void => {
+          headers[name] = value;
+        },
+
+        send: (body?: string | null): void => {
+          this._webDavRequest({
+            url,
+            method,
+            headers,
+            data: body ?? undefined,
+          }).then(
+            (res) => {
+              if (aborted) return;
+              fakeXhr.status = res.status;
+              fakeXhr.statusText = '';
+              fakeXhr.responseText = res.data || '';
+              fakeXhr.response = res.data || '';
+              fakeXhr.readyState = 4;
+              if (res.headers) {
+                for (const [k, v] of Object.entries(res.headers)) {
+                  responseHeaders[k.toLowerCase()] = v;
+                }
+              }
+              const event = { target: fakeXhr, type: 'load' };
+              // cdav-library v1.5.3 uses onreadystatechange exclusively; fire it
+              // first so its readyState === 4 check passes, then fire onload for
+              // any other consumers.
+              fakeXhr.onreadystatechange?.(event);
+              fakeXhr.onload?.(event);
+              [...(eventListeners.get('load') ?? [])].forEach((fn) => fn(event));
+            },
+            (err: unknown) => {
+              if (aborted) return;
+              fakeXhr.readyState = 4;
+              const event = { target: fakeXhr, type: 'error', error: err };
+              fakeXhr.onreadystatechange?.(event);
+              fakeXhr.onerror?.(event);
+              [...(eventListeners.get('error') ?? [])].forEach((fn) => fn(event));
+            },
+          );
+        },
+
+        getResponseHeader: (name: string): string | null => {
+          return CaldavClientService._getResponseHeaderWithDavFallback(
+            name,
+            responseHeaders[name.toLowerCase()] ?? null,
+          );
+        },
+
+        getAllResponseHeaders: (): string => {
+          return Object.entries(responseHeaders)
+            .map(([k, v]) => `${k}: ${v}`)
+            .join('\r\n');
+        },
+
+        addEventListener: (
+          type: string,
+          callback: (...args: unknown[]) => void,
+        ): void => {
+          if (!eventListeners.has(type)) {
+            eventListeners.set(type, []);
+          }
+          eventListeners.get(type)!.push(callback);
+        },
+
+        removeEventListener: (
+          type: string,
+          callback: (...args: unknown[]) => void,
+        ): void => {
+          const listeners = eventListeners.get(type);
+          if (listeners) {
+            const idx = listeners.indexOf(callback);
+            if (idx !== -1) listeners.splice(idx, 1);
+          }
+        },
+
+        abort: (): void => {
+          aborted = true;
+          const event = { target: fakeXhr, type: 'abort' };
+          fakeXhr.onabort?.(event);
+          [...(eventListeners.get('abort') ?? [])].forEach((fn) => fn(event));
+        },
+      };
+
+      return fakeXhr as unknown as XMLHttpRequest;
+    };
+  }
+
+  private _handleNetErr(err: unknown): never {
     this._snackService.open({
       type: 'ERROR',
       msg: T.F.ISSUE.S.ERR_NETWORK,
@@ -322,20 +615,21 @@ export class CaldavClientService {
     filterCategory: boolean,
   ): Promise<CaldavIssue[]> {
     const cal = await this._getCalendar(cfg);
-    const tasks = await CaldavClientService._getAllTodos(cal, filterOpen).catch(
-      (err: any) => this._handleNetErr(err),
+    const tasks = await CaldavClientService._getAllTodos(cal, filterOpen).catch((err) =>
+      this._handleNetErr(err),
     );
-    return tasks
-      .map((t: any) => CaldavClientService._mapTask(t))
-      .filter(
-        (t: CaldavIssue) =>
-          !filterCategory || !cfg.categoryFilter || t.labels.includes(cfg.categoryFilter),
-      );
+    const mappedTasks = await Promise.all(
+      tasks.map((t) => CaldavClientService._mapTask(t)),
+    );
+    return mappedTasks.filter(
+      (t: CaldavIssue) =>
+        !filterCategory || !cfg.categoryFilter || t.labels.includes(cfg.categoryFilter),
+    );
   }
 
   private async _getTask(cfg: CaldavCfg, uid: string): Promise<CaldavIssue> {
     const cal = await this._getCalendar(cfg);
-    const task = await CaldavClientService._findTaskByUid(cal, uid).catch((err: any) =>
+    const task = await CaldavClientService._findTaskByUid(cal, uid).catch((err) =>
       this._handleNetErr(err),
     );
 
@@ -347,14 +641,14 @@ export class CaldavClientService {
       throw new Error('ISSUE NOT FOUND: ' + uid);
     }
 
-    return CaldavClientService._mapTask(task[0]);
+    return await CaldavClientService._mapTask(task[0]);
   }
 
-  private async _updateCompletedState(
+  private async _updateTask(
     cfg: CaldavCfg,
     uid: string,
-    completed: boolean,
-  ): Promise<any> {
+    updates: { completed?: boolean; summary?: string; note?: string },
+  ): Promise<void> {
     const cal = await this._getCalendar(cfg);
 
     if (cal.readOnly) {
@@ -368,7 +662,7 @@ export class CaldavClientService {
       throw new Error('CALENDAR READ ONLY: ' + cfg.resourceName);
     }
 
-    const tasks = await CaldavClientService._findTaskByUid(cal, uid).catch((err: any) =>
+    const tasks = await CaldavClientService._findTaskByUid(cal, uid).catch((err) =>
       this._handleNetErr(err),
     );
 
@@ -384,21 +678,51 @@ export class CaldavClientService {
     }
 
     const task = tasks[0];
+    const ICAL = await loadIcalModule();
     const jCal = ICAL.parse(task.data);
     const comp = new ICAL.Component(jCal);
     const todo = comp.getFirstSubcomponent('vtodo');
 
-    const oldCompleted = !!todo.getFirstPropertyValue('completed');
-
-    if (completed === oldCompleted) {
+    if (!todo) {
+      IssueLog.err('No todo found for CalDAV task');
       return;
     }
 
     const now = ICAL.Time.now();
-    if (completed) {
-      todo.updatePropertyWithValue('completed', now);
-    } else {
-      todo.removeProperty('completed');
+    let changeObserved = false;
+
+    const oldCompleted = CaldavClientService._isTodoCompleted(todo);
+    if (updates.completed !== undefined && updates.completed !== oldCompleted) {
+      if (updates.completed) {
+        todo.updatePropertyWithValue('completed', now);
+        todo.updatePropertyWithValue('percent-complete', '100');
+        todo.updatePropertyWithValue('status', CaldavIssueStatus.COMPLETED);
+      } else {
+        todo.removeProperty('completed');
+        todo.removeProperty('percent-complete');
+        todo.updatePropertyWithValue('status', CaldavIssueStatus.NEEDS_ACTION);
+      }
+      changeObserved = true;
+    }
+
+    if (updates.summary !== undefined) {
+      const oldSummary = todo.getFirstPropertyValue('summary');
+      if (updates.summary !== oldSummary) {
+        todo.updatePropertyWithValue('summary', updates.summary);
+        changeObserved = true;
+      }
+    }
+
+    if (updates.note !== undefined) {
+      const oldNote = (todo.getFirstPropertyValue('description') as string) || '';
+      if (updates.note !== oldNote) {
+        todo.updatePropertyWithValue('description', updates.note);
+        changeObserved = true;
+      }
+    }
+
+    if (!changeObserved) {
+      return;
     }
     todo.updatePropertyWithValue('last-modified', now);
     todo.updatePropertyWithValue('dtstamp', now);
@@ -408,10 +732,12 @@ export class CaldavClientService {
     // As 'sequence' starts at 0 and completing probably counts as a major change, then it should be at least 1 in the end,
     // if no other changes have been written.
     const sequence = todo.getFirstPropertyValue('sequence');
-    const sequenceInt = sequence ? parseInt(sequence) + 1 : 1;
+    const sequenceInt = sequence ? parseInt(sequence as string, 10) + 1 : 1;
     todo.updatePropertyWithValue('sequence', sequenceInt);
 
     task.data = ICAL.stringify(jCal);
-    await task.update().catch((err: any) => this._handleNetErr(err));
+    if (task.update) {
+      await task.update().catch((err) => this._handleNetErr(err));
+    }
   }
 }

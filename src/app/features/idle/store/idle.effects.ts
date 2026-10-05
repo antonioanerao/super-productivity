@@ -1,9 +1,13 @@
-import { Injectable } from '@angular/core';
-import { Actions, createEffect, ofType } from '@ngrx/effects';
+import { inject, Injectable } from '@angular/core';
+import { createEffect, ofType } from '@ngrx/effects';
+import { LOCAL_ACTIONS } from '../../../util/local-actions.token';
+import { skipWhileApplyingRemoteOps } from '../../../util/skip-during-sync.operator';
+import { waitForSyncWindow } from '../../../util/wait-for-sync-window.operator';
+import { HydrationStateService } from '../../../op-log/apply/hydration-state.service';
+import { DataInitStateService } from '../../../core/data-init/data-init-state.service';
 import { ChromeExtensionInterfaceService } from '../../../core/chrome-extension-interface/chrome-extension-interface.service';
 import { WorkContextService } from '../../work-context/work-context.service';
 import { TaskService } from '../../tasks/task.service';
-import { GlobalConfigService } from '../../config/global-config.service';
 import { MatDialog } from '@angular/material/dialog';
 import { Store } from '@ngrx/store';
 import { UiHelperService } from '../../ui-helper/ui-helper.service';
@@ -14,9 +18,9 @@ import {
   resetIdle,
   setIdleTime,
   triggerIdle,
-  triggerResetBreakTimer,
 } from './idle.actions';
 import {
+  concatMap,
   distinctUntilChanged,
   exhaustMap,
   filter,
@@ -33,7 +37,6 @@ import { IPC } from '../../../../../electron/shared-with-frontend/ipc-events.con
 import { SimpleCounterService } from '../../simple-counter/simple-counter.service';
 import { selectIdleTime, selectIsIdle } from './idle.selectors';
 import { turnOffAllSimpleCounterCounters } from '../../simple-counter/store/simple-counter.actions';
-import { IdleService } from '../idle.service';
 import { DialogIdleComponent } from '../dialog-idle/dialog-idle.component';
 import { selectIdleConfig } from '../../config/store/global-config.reducer';
 import { devError } from '../../../util/dev-error';
@@ -46,24 +49,42 @@ import {
 import { isNotNullOrUndefined } from '../../../util/is-not-null-or-undefined';
 import { DialogConfirmComponent } from '../../../ui/dialog-confirm/dialog-confirm.component';
 import { T } from '../../../t.const';
-import { DateService } from 'src/app/core/date/date.service';
+import { DateService } from '../../../core/date/date.service';
 import { ipcIdleTime$ } from '../../../core/ipc-events';
+import { selectIsSessionRunning } from '../../focus-mode/store/focus-mode.selectors';
+import {
+  completeFocusSession,
+  showFocusOverlay,
+  unPauseFocusSession,
+} from '../../focus-mode/store/focus-mode.actions';
+import { Log } from '../../../core/log';
 
 const DEFAULT_MIN_IDLE_TIME = 60000;
 const IDLE_POLL_INTERVAL = 1000;
 
 @Injectable()
 export class IdleEffects {
-  private _isFrontEndIdlePollRunning = false;
+  private actions$ = inject(LOCAL_ACTIONS);
+  private _chromeExtensionInterfaceService = inject(ChromeExtensionInterfaceService);
+  private _workContextService = inject(WorkContextService);
+  private _taskService = inject(TaskService);
+  private _simpleCounterService = inject(SimpleCounterService);
+  private _matDialog = inject(MatDialog);
+  private _store = inject(Store);
+  private _uiHelperService = inject(UiHelperService);
+  private _dateService = inject(DateService);
+
+  private _dataInitStateService = inject(DataInitStateService);
+  private _hydrationStateService = inject(HydrationStateService);
+
   private _clearIdlePollInterval?: () => void;
   private _isDialogOpen: boolean = false;
 
   // NOTE: needs to live forever since we can't unsubscribe from ipcEvent$
-  // TODO check if this works as expected
-  private _electronIdleTime$: Observable<number> = IS_ELECTRON ? ipcIdleTime$ : EMPTY;
+  private _isFocusSessionRunning$ = this._store.select(selectIsSessionRunning);
 
   private _triggerIdleApis$ = IS_ELECTRON
-    ? this._electronIdleTime$
+    ? ipcIdleTime$
     : this._chromeExtensionInterfaceService.onReady$.pipe(
         first(),
         switchMap(() => {
@@ -79,25 +100,61 @@ export class IdleEffects {
         }),
       );
 
+  // NOTE: Why we filter out triggers when already idle (fixes #5652):
+  // When the idle dialog is open, two timers compete to update idleTime in the store:
+  // 1. The IPC stream from Electron (this effect) - reports current system idle time
+  // 2. The internal poll timer (_initIdlePoll) - calculates initialIdleTime + elapsed time
+  //
+  // The internal poll timer is MORE ACCURATE for display because:
+  // - It uses Date.now() with a fixed reference point (idleStart) for precise calculation
+  // - The IPC system idle time resets whenever the user moves the mouse slightly
+  // - We want to show "total time away" not "current system idle time"
+  //
+  // By filtering when isIdle=true, we let the internal poll timer control the display
+  // while the dialog is open, preventing the flickering between two different values.
   triggerIdleWhenEnabled$ = createEffect(() =>
-    this._store.select(selectIdleConfig).pipe(
+    this._dataInitStateService.isAllDataLoadedInitially$.pipe(
+      concatMap(() => this._store.select(selectIdleConfig)),
+      skipWhileApplyingRemoteOps(),
       switchMap(
         ({
           isEnableIdleTimeTracking,
           isOnlyOpenIdleWhenCurrentTask,
+          isSuppressIdleDuringFocusMode,
           minIdleTime = DEFAULT_MIN_IDLE_TIME,
         }) =>
           !isEnableIdleTimeTracking
             ? of(resetIdle())
             : this._triggerIdleApis$.pipe(
-                switchMap((idleTimeInMs) => {
-                  if (isOnlyOpenIdleWhenCurrentTask && !this._taskService.currentTaskId) {
+                withLatestFrom(
+                  this._store.select(selectIsIdle),
+                  this._isFocusSessionRunning$,
+                ),
+                switchMap(([idleTimeInMs, isAlreadyIdle, isFocusSessionRunning]) => {
+                  // Skip if already in idle state - let internal poll timer handle updates
+                  if (isAlreadyIdle) {
+                    return EMPTY;
+                  }
+
+                  if (isSuppressIdleDuringFocusMode && isFocusSessionRunning) {
+                    return EMPTY;
+                  }
+
+                  Log.verbose('triggerIdleWhenEnabled$', {
+                    idleTimeInMs,
+                    isEnableIdleTimeTracking,
+                    isOnlyOpenIdleWhenCurrentTask,
+                    isSuppressIdleDuringFocusMode,
+                    minIdleTime,
+                  });
+                  if (
+                    isOnlyOpenIdleWhenCurrentTask &&
+                    !this._taskService.currentTaskId()
+                  ) {
                     return of(resetIdle());
                   }
                   const idleTime = idleTimeInMs as number;
-                  return idleTime >= minIdleTime && !this._isFrontEndIdlePollRunning
-                    ? of(triggerIdle({ idleTime }))
-                    : EMPTY;
+                  return idleTime >= minIdleTime ? of(triggerIdle({ idleTime })) : EMPTY;
                 }),
               ),
       ),
@@ -107,46 +164,88 @@ export class IdleEffects {
   handleIdleInit$ = createEffect(() =>
     this._store.select(selectIsIdle).pipe(
       distinctUntilChanged(),
-      switchMap((isIdle) => iif(() => isIdle, of(isIdle))),
+      // Snapshot EVERY entity this effect mutates BEFORE the wait below. The
+      // deferral can outlive the user's return, so anything re-read afterwards
+      // may be a *different* task or counter that never accrued this idle time —
+      // subtracting it there would silently delete real tracked work. #9348
       withLatestFrom(
         this._store.select(selectIdleTime),
         this._simpleCounterService.enabledSimpleStopWatchCounters$,
+        this._isFocusSessionRunning$,
       ),
-      map(([, idleTime, enabledSimpleStopWatchCounters]) => {
-        // ALL IDLE SIDE EFFECTS
-        // ---------------------
-        if (IS_ELECTRON) {
-          this._uiHelperService.focusApp();
-        }
+      map(
+        ([isIdle, idleTime, enabledSimpleStopWatchCounters, isFocusSessionRunning]) => ({
+          isIdle,
+          idleTime,
+          enabledSimpleStopWatchCounters,
+          isFocusSessionRunning,
+          taskIdAtIdleStart: this._taskService.currentTaskId(),
+        }),
+      ),
+      // Guard: defer idle state changes during sync - CRITICAL because this effect
+      // has data mutations (removeTimeSpent, setCurrentId, decreaseCounterToday).
+      // NOTE: this must DEFER, not drop. selectIsIdle emits `true` exactly once
+      // per idle episode, so a dropped edge is gone for good — and it leaves the
+      // store stuck at isIdle:true, which makes triggerIdleWhenEnabled$
+      // short-circuit on isAlreadyIdle from then on, killing idle handling for
+      // the whole session. See #9348.
+      // It must also stay AHEAD of every distinctUntilChanged(): the operator is
+      // a switchMap, so a superseded edge is cancelled and never emitted. A dUC
+      // downstream would keep that cancelled value as its "last seen" and swallow
+      // the next identical one — re-creating the wedge this is here to prevent.
+      waitForSyncWindow(this._hydrationStateService, 'IdleEffects.handleIdleInit$'),
+      switchMap((snapshot) => iif(() => snapshot.isIdle, of(snapshot), EMPTY)),
+      map(
+        ({
+          taskIdAtIdleStart,
+          idleTime,
+          enabledSimpleStopWatchCounters,
+          isFocusSessionRunning,
+        }) => {
+          // ALL IDLE SIDE EFFECTS
+          // ---------------------
+          if (IS_ELECTRON) {
+            this._uiHelperService.focusAppAfterNotification();
+          }
 
-        // untrack current task time und unselect
-        let lastCurrentTaskId: string | null;
-        if (this._taskService.currentTaskId) {
-          lastCurrentTaskId = this._taskService.currentTaskId;
-          // remove idle time already tracked
-          this._taskService.removeTimeSpent(this._taskService.currentTaskId, idleTime);
-          this._taskService.setCurrentId(null);
-        } else {
-          lastCurrentTaskId = null;
-        }
+          // untrack current task time und unselect
+          let lastCurrentTaskId: string | null;
+          // snapshot from the idle edge, not a re-read — see the capture above
+          const tid = taskIdAtIdleStart;
+          if (tid) {
+            lastCurrentTaskId = tid;
+            // remove idle time already tracked
+            this._taskService.removeTimeSpent(tid, idleTime);
+            this._taskService.setCurrentId(null);
+          } else {
+            lastCurrentTaskId = null;
+          }
 
-        // untrack on simple counter time and turn off
-        if (enabledSimpleStopWatchCounters.length) {
-          enabledSimpleStopWatchCounters.forEach((simpleCounter) => {
-            if (simpleCounter.isOn) {
-              this._simpleCounterService.decreaseCounterToday(simpleCounter.id, idleTime);
-            }
+          // untrack on simple counter time and turn off
+          if (enabledSimpleStopWatchCounters.length) {
+            enabledSimpleStopWatchCounters.forEach((simpleCounter) => {
+              if (simpleCounter.isOn) {
+                this._simpleCounterService.decreaseCounterToday(
+                  simpleCounter.id,
+                  idleTime,
+                );
+              }
+            });
+            this._store.dispatch(turnOffAllSimpleCounterCounters());
+          }
+
+          // NOTE: we need a new idleTimer since the other values are reset as soon as the user is active again
+          this._initIdlePoll(idleTime);
+
+          // this._openDialog(enabledSimpleStopWatchCounters, lastCurrentTaskId);
+          // finally open dialog
+          return openIdleDialog({
+            enabledSimpleStopWatchCounters,
+            lastCurrentTaskId,
+            wasFocusSessionRunning: isFocusSessionRunning,
           });
-          this._store.dispatch(turnOffAllSimpleCounterCounters());
-        }
-
-        // NOTE: we need a new idleTimer since the other values are reset as soon as the user is active again
-        this._initIdlePoll(idleTime);
-
-        // this._openDialog(enabledSimpleStopWatchCounters, lastCurrentTaskId);
-        // finally open dialog
-        return openIdleDialog({ enabledSimpleStopWatchCounters, lastCurrentTaskId });
-      }),
+        },
+      ),
     ),
   );
 
@@ -156,22 +255,24 @@ export class IdleEffects {
       filter(() => !this._isDialogOpen),
       tap(() => (this._isDialogOpen = true)),
       // use exhaustMap to prevent opening up multiple dialogs
-      exhaustMap(({ enabledSimpleStopWatchCounters, lastCurrentTaskId }) =>
-        this._matDialog
-          .open<
-            DialogIdleComponent,
-            DialogIdlePassedData,
-            DialogIdleReturnData | undefined
-          >(DialogIdleComponent, {
-            restoreFocus: true,
-            disableClose: true,
-            closeOnNavigation: false,
-            data: {
-              lastCurrentTaskId,
-              enabledSimpleStopWatchCounters,
-            },
-          })
-          .afterClosed(),
+      exhaustMap(
+        ({ enabledSimpleStopWatchCounters, lastCurrentTaskId, wasFocusSessionRunning }) =>
+          this._matDialog
+            .open<
+              DialogIdleComponent,
+              DialogIdlePassedData,
+              DialogIdleReturnData | undefined
+            >(DialogIdleComponent, {
+              restoreFocus: true,
+              disableClose: true,
+              closeOnNavigation: false,
+              data: {
+                lastCurrentTaskId,
+                enabledSimpleStopWatchCounters,
+                wasFocusSessionRunning,
+              },
+            })
+            .afterClosed(),
       ),
       tap((dialogRes) => {
         if (!dialogRes) {
@@ -179,7 +280,14 @@ export class IdleEffects {
         }
       }),
       isNotNullOrUndefined(),
-      map((dialogRes) => idleDialogResult(dialogRes)),
+      withLatestFrom(this._store.select(selectIdleTime)),
+      map(([dialogRes, idleTime]) =>
+        idleDialogResult({
+          ...dialogRes,
+          idleTime,
+          // TODO
+        }),
+      ),
       tap(() => (this._isDialogOpen = false)),
     ),
   );
@@ -187,112 +295,121 @@ export class IdleEffects {
   handleIdleDialogResult$ = createEffect(() =>
     this.actions$.pipe(
       ofType(idleDialogResult),
-      withLatestFrom(this._store.select(selectIdleTime)),
-      tap(([{ trackItems, simpleCounterToggleBtnsWhenNoTrackItems }, idleTime]) => {
-        this._cancelIdlePoll();
-        // handle dialog result weirdness :(
-        if (!trackItems) {
-          devError('No track items ???');
-          return;
-        }
+      tap(
+        ({
+          trackItems,
+          simpleCounterToggleBtnsWhenNoTrackItems,
+          idleTime,
+          wasFocusSessionRunning,
+          isResetBreakTimer,
+        }) => {
+          this._cancelIdlePoll();
+          // handle dialog result weirdness :(
+          if (!trackItems) {
+            devError('No track items ???');
+            return;
+          }
 
-        if (trackItems.length === 0 && simpleCounterToggleBtnsWhenNoTrackItems) {
-          const activatedItemNr = simpleCounterToggleBtnsWhenNoTrackItems.filter(
-            (btn) => btn.isTrackTo,
-          ).length;
+          if (trackItems.length === 0 && simpleCounterToggleBtnsWhenNoTrackItems) {
+            if (wasFocusSessionRunning) {
+              this._store.dispatch(completeFocusSession({ isManual: false }));
+              this._store.dispatch(showFocusOverlay());
+            }
 
-          // TODO maybe move to effect
-          if (activatedItemNr > 0) {
-            this._matDialog
-              .open(DialogConfirmComponent, {
-                restoreFocus: true,
-                data: {
-                  cancelTxt: T.F.TIME_TRACKING.D_IDLE.SIMPLE_CONFIRM_COUNTER_CANCEL,
-                  okTxt: T.F.TIME_TRACKING.D_IDLE.SIMPLE_CONFIRM_COUNTER_OK,
-                  message: T.F.TIME_TRACKING.D_IDLE.SIMPLE_COUNTER_CONFIRM_TXT,
-                  translateParams: {
-                    nr: activatedItemNr,
+            const activatedItemNr = simpleCounterToggleBtnsWhenNoTrackItems.filter(
+              (btn) => btn.isTrackTo,
+            ).length;
+
+            // TODO maybe move to effect
+            if (activatedItemNr > 0) {
+              this._matDialog
+                .open(DialogConfirmComponent, {
+                  restoreFocus: true,
+                  data: {
+                    cancelTxt: T.F.TIME_TRACKING.D_IDLE.SIMPLE_CONFIRM_COUNTER_CANCEL,
+                    okTxt: T.F.TIME_TRACKING.D_IDLE.SIMPLE_CONFIRM_COUNTER_OK,
+                    message: T.F.TIME_TRACKING.D_IDLE.SIMPLE_COUNTER_CONFIRM_TXT,
+                    translateParams: {
+                      nr: activatedItemNr,
+                    },
                   },
-                },
-              })
-              .afterClosed()
-              .subscribe((isConfirm: boolean) => {
-                if (isConfirm) {
-                  // TODO maybe move to effect
-                  this._updateSimpleCounterValues(
-                    simpleCounterToggleBtnsWhenNoTrackItems,
-                    idleTime,
-                  );
-                }
-              });
+                })
+                .afterClosed()
+                .subscribe((isConfirm: boolean) => {
+                  if (isConfirm) {
+                    // TODO maybe move to effect
+                    this._updateSimpleCounterValues(
+                      simpleCounterToggleBtnsWhenNoTrackItems,
+                      idleTime,
+                    );
+                  }
+                });
+            }
+            return;
           }
-          return;
-        }
 
-        const itemsWithMappedIdleTime = trackItems.map((trackItem) => ({
-          ...trackItem,
-          time: trackItem.time === 'IDLE_TIME' ? idleTime : trackItem.time,
-        }));
+          const itemsWithMappedIdleTime = trackItems.map((trackItem) => ({
+            ...trackItem,
+            time: trackItem.time === 'IDLE_TIME' ? idleTime : trackItem.time,
+          }));
 
-        itemsWithMappedIdleTime.forEach((item) => {
-          this._updateSimpleCounterValues(item.simpleCounterToggleBtns, item.time);
-        });
-
-        const breakItems = itemsWithMappedIdleTime.filter(
-          (item: IdleTrackItem) =>
-            item.type === 'BREAK' || item.type === 'TASK_AND_BREAK',
-        );
-        if (breakItems.length) {
-          this._store.dispatch(triggerResetBreakTimer());
-          breakItems.forEach((item) => {
-            this._workContextService.addToBreakTimeForActiveContext(undefined, item.time);
+          itemsWithMappedIdleTime.forEach((item) => {
+            this._updateSimpleCounterValues(item.simpleCounterToggleBtns, item.time);
           });
-        }
 
-        const taskItems = itemsWithMappedIdleTime.filter(
-          (item: IdleTrackItem) => item.type === 'TASK' || item.type === 'TASK_AND_BREAK',
-        );
-        let taskItemId: string | undefined;
-        taskItems.forEach((taskItem) => {
-          if (typeof taskItem.title === 'string') {
-            taskItemId = this._taskService.add(taskItem.title, false, {
-              timeSpent: taskItem.time,
-              timeSpentOnDay: {
-                [this._dateService.todayStr()]: taskItem.time,
-              },
+          const breakItems = itemsWithMappedIdleTime.filter(
+            (item: IdleTrackItem) => item.type === 'BREAK',
+          );
+          // NOTE: break timer reset is handled in takeABrea
+          if (breakItems.length) {
+            breakItems.forEach((item) => {
+              this._workContextService.addToBreakTimeForActiveContext(
+                undefined,
+                item.time,
+              );
             });
-          } else if (taskItem.task) {
-            taskItemId = taskItem.task.id;
-            this._taskService.addTimeSpent(taskItem.task, taskItem.time);
+            if (wasFocusSessionRunning) {
+              this._store.dispatch(completeFocusSession({ isManual: false }));
+              this._store.dispatch(showFocusOverlay());
+            }
+          } else if (wasFocusSessionRunning) {
+            this._store.dispatch(unPauseFocusSession());
+            this._store.dispatch(showFocusOverlay());
           }
-        });
 
-        if (taskItems.length === 1 && taskItemId) {
-          this._taskService.setCurrentId(taskItemId);
-        }
-      }),
+          const taskItems = itemsWithMappedIdleTime.filter(
+            (item: IdleTrackItem) => item.type === 'TASK',
+          );
+          let taskItemId: string | undefined;
+          taskItems.forEach((taskItem) => {
+            if (typeof taskItem.title === 'string') {
+              taskItemId = this._taskService.add(taskItem.title, false, {
+                timeSpent: taskItem.time,
+                timeSpentOnDay: {
+                  [this._dateService.todayStr()]: taskItem.time,
+                },
+              });
+            } else if (taskItem.task) {
+              taskItemId = taskItem.task.id;
+              this._taskService.addTimeSpentAndSync(taskItem.task, taskItem.time);
+            }
+          });
+
+          if (taskItems.length === 1 && taskItemId) {
+            this._taskService.setCurrentId(taskItemId);
+          }
+        },
+      ),
       // unset idle at the end
       mapTo(resetIdle()),
     ),
   );
 
-  constructor(
-    private actions$: Actions,
-    private _chromeExtensionInterfaceService: ChromeExtensionInterfaceService,
-    private _workContextService: WorkContextService,
-    private _taskService: TaskService,
-    private _simpleCounterService: SimpleCounterService,
-    private _configService: GlobalConfigService,
-    private _matDialog: MatDialog,
-    private _store: Store,
-    private _uiHelperService: UiHelperService,
-    private _idleService: IdleService,
-    private _dateService: DateService,
-  ) {
-    // window.setTimeout(() => {
-    //   this._store.dispatch(triggerIdle({ idleTime: 60 * 1000 }));
-    // }, 2700);
-  }
+  // constructor() {
+  //   window.setTimeout(() => {
+  //     this._store.dispatch(triggerIdle({ idleTime: 60 * 1000 }));
+  //   }, 8700);
+  // }
 
   private _initIdlePoll(initialIdleTime: number): void {
     const idleStart = Date.now();
@@ -302,7 +419,6 @@ export class IdleEffects {
       const delta = Date.now() - idleStart;
       this._store.dispatch(setIdleTime({ idleTime: initialIdleTime + delta }));
     }, IDLE_POLL_INTERVAL);
-    this._isFrontEndIdlePollRunning = true;
   }
 
   private _cancelIdlePoll(): void {
@@ -310,7 +426,6 @@ export class IdleEffects {
       this._clearIdlePollInterval();
       this._clearIdlePollInterval = undefined;
     }
-    this._isFrontEndIdlePollRunning = false;
   }
 
   private async _updateSimpleCounterValues(

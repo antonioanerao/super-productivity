@@ -1,18 +1,24 @@
-/* eslint-disable one-var */
 import { WorkStartEnd } from 'src/app/features/work-context/work-context.model';
 import { WorklogGrouping } from '../worklog.model';
-import { createRows } from './worklog-export.util';
+import {
+  createRows,
+  formatRows,
+  formatText,
+  getHeadlineCol,
+} from './worklog-export.util';
 import { DEFAULT_TASK, WorklogTask } from '../../tasks/task.model';
 import { DEFAULT_PROJECT } from '../../project/project.const';
 import { DEFAULT_TAG } from '../../tag/tag.const';
 import { Project } from 'src/app/features/project/project.model';
 import { WorklogExportData, WorkTimes } from './worklog-export.model';
 import { Tag } from '../../tag/tag.model';
+import { msToClockString } from '../../../ui/duration/ms-to-clock-string.pipe';
+import { msToString } from '../../../ui/duration/ms-to-string.pipe';
 
-const startTime1 = new Date('5/2/2021 10:00:00').getTime();
-const endTime1 = new Date('5/2/2021 12:00:00').getTime();
-const startTime2 = new Date('6/2/2021 14:00:00').getTime();
-const endTime2 = new Date('6/2/2021 16:00:00').getTime();
+const startTime1 = new Date(2021, 1, 5, 10, 0, 0).getTime();
+const endTime1 = new Date(2021, 1, 5, 12, 0, 0).getTime();
+const startTime2 = new Date(2021, 1, 6, 14, 0, 0).getTime();
+const endTime2 = new Date(2021, 1, 6, 16, 0, 0).getTime();
 const dateKey1 = '2021-02-05',
   dateKey2 = '2021-02-06';
 const start: WorkStartEnd = { [dateKey1]: startTime1, [dateKey2]: startTime2 };
@@ -71,6 +77,92 @@ const createWorklogData = (
 };
 
 describe('createRows', () => {
+  it('should accumulate each day independently without changing input task data', () => {
+    const shared = createTask({
+      id: 'shared',
+      notes: 'Shared note',
+      timeSpentOnDay: { [dateKey1]: oneHour, [dateKey2]: twoHours },
+    });
+    const first = createTask({ id: 'first', notes: 'First note' });
+    const second = createTask({
+      id: 'second',
+      notes: 'Second note',
+      timeSpentOnDay: { [dateKey2]: oneHour },
+    });
+    const tasks = [shared, first, second];
+    const tag = createTag('tag', ...tasks);
+    tasks.forEach((task) => {
+      Object.freeze(task.timeSpentOnDay);
+      Object.freeze(task.tagIds);
+      Object.freeze(task);
+    });
+    Object.freeze(tasks);
+
+    const rows = createRows(
+      createWorklogData({ tasks, tags: [tag] }),
+      WorklogGrouping.DATE,
+    );
+
+    expect(rows.map((row) => row.titles)).toEqual([
+      ['shared', 'first'],
+      ['shared', 'second'],
+    ]);
+    expect(rows.map((row) => row.notes)).toEqual([
+      ['Shared note', 'First note'],
+      ['Shared note', 'Second note'],
+    ]);
+    expect(rows.map((row) => row.tasks)).toEqual([
+      [shared, first],
+      [shared, second],
+    ]);
+    expect(rows.map((row) => row.tags)).toEqual([['tag'], ['tag']]);
+    expect(rows.map((row) => row.timeSpent)).toEqual([twoHours, oneHour + twoHours]);
+  });
+
+  // Characterizes a legacy inconsistency, not a requirement: only merged rows were
+  // ever deduplicated, so a lone task keeps two same-titled tags. Safe to change.
+  it('should retain duplicate display tags for a single task but deduplicate merged rows', () => {
+    const task = createTask({
+      id: 'shared',
+      timeSpentOnDay: { [dateKey1]: oneHour, [dateKey2]: oneHour },
+    });
+    const other = createTask({ id: 'other' });
+    const tags = [createTag('a', task), createTag('b', task)].map((tag) => ({
+      ...tag,
+      title: 'Same name',
+    }));
+
+    const rows = createRows(
+      createWorklogData({ tasks: [task, other], tags }),
+      WorklogGrouping.DATE,
+    );
+
+    expect(rows.map((row) => row.tags)).toEqual([
+      ['Same name'],
+      ['Same name', 'Same name'],
+    ]);
+  });
+
+  it('should retain the first matching metadata entry when IDs are repeated', () => {
+    const parent = createTask({ id: 'parent', title: 'First parent' });
+    const child = createSubTask({ id: 'child' }, parent);
+    const tag = createTag('tag', parent);
+    const project = createProject('project', parent, child);
+    const rows = createRows(
+      createWorklogData({
+        tasks: [parent, child, { ...parent, title: 'Second parent' }],
+        tags: [tag, { ...tag, title: 'Second tag' }],
+        projects: [project, { ...project, title: 'Second project' }],
+      }),
+      WorklogGrouping.TASK,
+    );
+
+    expect(rows.length).toBe(1);
+    expect(rows[0].titles).toEqual(['First parent']);
+    expect(rows[0].tags).toEqual(['tag']);
+    expect(rows[0].projects).toEqual(['project']);
+  });
+
   describe('time', () => {
     it('should have correct time fields', () => {
       const tasks = [
@@ -120,6 +212,7 @@ describe('createRows', () => {
           id: 'T1',
           timeSpentOnDay: {
             [dateKey1]: oneHour,
+            // eslint-disable-next-line @typescript-eslint/naming-convention
             '2021-02-20': oneHour,
             [dateKey2]: oneHour,
           },
@@ -264,6 +357,31 @@ describe('createRows', () => {
       expect(rows[2].tags).toEqual([tagId2]);
     });
 
+    it('should use sub-task own tags when present, not parent tags (#7756)', () => {
+      // Mirrors #7756 follow-up: sub-tasks may now own tags distinct from the
+      // parent. Worklog rows for the sub-task should report what the sub-task
+      // actually carries, not silently swap in the parent's tags.
+      const pId = 'PT_OWN',
+        sId = 'ST_OWN',
+        parentTagId = 'TagParent',
+        subOwnTagId = 'TagOwn';
+      const parent = createTask({ id: pId });
+      const sub = createSubTask({ id: sId }, parent);
+      const parentTag = createTag(parentTagId, parent);
+      const subOwnTag = createTag(subOwnTagId, sub);
+      const ownData = createWorklogData({
+        tasks: [parent, sub],
+        tags: [parentTag, subOwnTag],
+      });
+
+      const rows = createRows(ownData, WorklogGrouping.WORKLOG);
+      // Parent row gets parent's tag, sub-task row gets its own tag.
+      const parentRow = rows.find((r) => r.titlesWithSub[0] === pId);
+      const subRow = rows.find((r) => r.titlesWithSub[0] === sId);
+      expect(parentRow?.tags).toEqual([parentTagId]);
+      expect(subRow?.tags).toEqual([subOwnTagId]);
+    });
+
     it('should have today tags', () => {
       const todayTaskId = 'T1',
         todayTagId = 'Tag1';
@@ -347,5 +465,176 @@ describe('createRows', () => {
       expect(rows[2].titlesWithSub).toEqual([taskId2]);
       expect(rows[2].dates).toEqual([dateKey2]);
     });
+
+    it('should only show day-level start and end times on the first task row for a day', () => {
+      const rows = createRows(
+        createWorklogData({
+          tasks: [task1, task2],
+          workTimes,
+        }),
+        WorklogGrouping.WORKLOG,
+      );
+
+      expect(rows.length).toBe(3);
+      expect(rows.map((row) => row.workStart)).toEqual([
+        workTimes.start[dateKey1],
+        0,
+        workTimes.start[dateKey2],
+      ]);
+      expect(rows.map((row) => row.workEnd)).toEqual([
+        workTimes.end[dateKey1],
+        0,
+        workTimes.end[dateKey2],
+      ]);
+
+      const formattedRows = formatRows(rows, {
+        roundWorkTimeTo: null,
+        roundStartTimeTo: null,
+        roundEndTimeTo: null,
+        separateTasksBy: ' | ',
+        cols: ['DATE', 'START', 'END', 'TIME_CLOCK', 'TITLES_INCLUDING_SUB'],
+        groupBy: WorklogGrouping.WORKLOG,
+      });
+
+      expect(formattedRows.map((row) => row.slice(0, 3))).toEqual([
+        [dateKey1, '10:00', '12:00'],
+        [dateKey1, ' - ', ' - '],
+        [dateKey2, '14:00', '16:00'],
+      ]);
+    });
+  });
+});
+
+describe('worklog-export.util moment replacement', () => {
+  describe('time formatting', () => {
+    it('should format timestamps as HH:mm', () => {
+      const testCases = [
+        {
+          timestamp: new Date(2023, 9, 15, 9, 30, 0).getTime(),
+          expected: '09:30',
+        },
+        {
+          timestamp: new Date(2023, 9, 15, 14, 45, 0).getTime(),
+          expected: '14:45',
+        },
+        {
+          timestamp: new Date(2023, 9, 15, 0, 0, 0).getTime(),
+          expected: '00:00',
+        },
+        {
+          timestamp: new Date(2023, 9, 15, 23, 59, 0).getTime(),
+          expected: '23:59',
+        },
+      ];
+
+      testCases.forEach(({ timestamp, expected }) => {
+        const date = new Date(timestamp);
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const formatted = `${hours}:${minutes}`;
+        expect(formatted).toBe(expected);
+      });
+    });
+
+    it('should handle roundTime functionality', () => {
+      // Test rounding to 15 minutes
+      const roundTo = 15 * 60 * 1000; // 15 minutes in ms
+      const testCases = [
+        {
+          timestamp: new Date(2023, 9, 15, 9, 7, 0).getTime(),
+          expected: new Date(2023, 9, 15, 9, 0, 0).getTime(),
+        },
+        {
+          timestamp: new Date(2023, 9, 15, 9, 8, 0).getTime(),
+          expected: new Date(2023, 9, 15, 9, 15, 0).getTime(),
+        },
+        {
+          timestamp: new Date(2023, 9, 15, 9, 22, 0).getTime(),
+          expected: new Date(2023, 9, 15, 9, 15, 0).getTime(),
+        },
+        {
+          timestamp: new Date(2023, 9, 15, 9, 23, 0).getTime(),
+          expected: new Date(2023, 9, 15, 9, 30, 0).getTime(),
+        },
+      ];
+
+      testCases.forEach(({ timestamp, expected }) => {
+        // roundTime implementation
+        const rounded = Math.round(timestamp / roundTo) * roundTo;
+        expect(rounded).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('getHeadlineCol', () => {
+  it('gives the two title columns distinct headers', () => {
+    expect(getHeadlineCol('TITLES')).toBe('Parent Titles');
+    expect(getHeadlineCol('TITLES_INCLUDING_SUB')).toBe('Titles');
+  });
+});
+
+describe('formatText', () => {
+  it('escapes delimiters, quotes, and line breaks while preserving ordinary fields', () => {
+    const csv = formatText(
+      ['Date', 'Titles'],
+      [
+        ['2026-07-26', 'Plain task'],
+        ['2026-07-27', 'Client; follow-up'],
+        ['2026-07-28', 'She said "hello"'],
+        ['2026-07-29', 'Line one\r\nLine two'],
+      ],
+    );
+
+    expect(csv).toBe(
+      'Date;Titles\n' +
+        '2026-07-26;Plain task\n' +
+        '2026-07-27;"Client; follow-up"\n' +
+        '2026-07-28;"She said ""hello"""\n' +
+        '2026-07-29;"Line one\r\nLine two"',
+    );
+  });
+
+  it('neutralizes spreadsheet formula injection in field values', () => {
+    const csv = formatText(
+      ['Date', 'Titles'],
+      [
+        ['2026-07-26', "=cmd|' /C calc'!A0"],
+        ['2026-07-27', '+SUM(A1:A9)'],
+        ['2026-07-28', '-2+3'],
+        ['2026-07-29', '@evil'],
+      ],
+    );
+
+    expect(csv).toBe(
+      'Date;Titles\n' +
+        "2026-07-26;'=cmd|' /C calc'!A0\n" +
+        "2026-07-27;'+SUM(A1:A9)\n" +
+        "2026-07-28;'-2+3\n" +
+        "2026-07-29;'@evil",
+    );
+  });
+
+  it('neutralizes a leading line break, which spreadsheets skip before parsing', () => {
+    const csv = formatText(['Titles'], [['\n=1+1']]);
+    expect(csv).toBe('Titles\n' + '"\'\n=1+1"');
+  });
+
+  it('leaves the bare zero-duration placeholder untouched', () => {
+    // msToClockString(0)/msToString(0) render `-`, and TIME_CLOCK is a default
+    // export column, so prefixing it would corrupt every zero row.
+    expect(msToClockString(0)).toBe('-');
+    expect(msToString(0)).toBe('-');
+
+    const csv = formatText(
+      ['Time Clock', 'Time String'],
+      [[msToClockString(0), msToString(0)]],
+    );
+    expect(csv).toBe('Time Clock;Time String\n-;-');
+  });
+
+  it('does not touch ordinary numbers and times', () => {
+    const csv = formatText(['Worked', 'Start'], [[7200000, '10:00']]);
+    expect(csv).toBe('Worked;Start\n7200000;10:00');
   });
 });

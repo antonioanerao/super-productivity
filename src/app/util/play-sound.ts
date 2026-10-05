@@ -1,35 +1,19 @@
+import { getAudioBuffer, playBuffer } from './audio-context';
+import { Log } from '../core/log';
+
 const BASE = './assets/snd';
 
-export const playSound = (filePath: string, vol = 100): void => {
-  const file = `${BASE}/${filePath}`;
-
-  const audioCtx = new ((window as any).AudioContext ||
-    (window as any).webkitAudioContext)();
-  const source = audioCtx.createBufferSource();
-  const request = new XMLHttpRequest();
-  request.open('GET', file, true);
-  request.responseType = 'arraybuffer';
-  request.onload = () => {
-    const audioData = request.response;
-    audioCtx.decodeAudioData(
-      audioData,
-      (buffer: AudioBuffer) => {
-        source.buffer = buffer;
-
-        if (vol !== 100) {
-          const gainNode = audioCtx.createGain();
-          gainNode.gain.value = vol / 100;
-          source.connect(gainNode);
-          gainNode.connect(audioCtx.destination);
-        } else {
-          source.connect(audioCtx.destination);
-        }
-      },
-      (e: DOMException) => {
-        throw new Error('Error with decoding audio data SP: ' + e.message);
-      },
-    );
-  };
-  request.send();
-  source.start(0);
+/**
+ * Plays a sound file at the specified volume.
+ *
+ * @param filePath - Path to the sound file relative to assets/snd
+ * @param vol - Volume level from 0 to 100 (default: 100)
+ */
+export const playSound = async (filePath: string, vol = 100): Promise<void> => {
+  try {
+    const buffer = await getAudioBuffer(`${BASE}/${filePath}`);
+    await playBuffer(buffer, vol);
+  } catch (e) {
+    Log.err('Error playing sound:', e);
+  }
 };

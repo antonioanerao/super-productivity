@@ -1,118 +1,213 @@
 import { IS_ANDROID_WEB_VIEW } from '../../util/is-android-web-view';
 import { nanoid } from 'nanoid';
-import { merge, Observable, Subject } from 'rxjs';
+import { BehaviorSubject, merge, Observable, ReplaySubject, Subject } from 'rxjs';
 import { mapTo } from 'rxjs/operators';
+import { DroidLog } from '../../core/log';
+
+export interface AndroidShareData {
+  title: string;
+  subject: string;
+  type: 'FILE' | 'LINK' | 'IMG' | 'COMMAND' | 'NOTE';
+  path: string;
+}
 
 export interface AndroidInterface {
+  getVersion?(): string;
+  getTextZoom?(): number;
+
+  // Launches the native Play In-App Review card (play flavor). No-op on fdroid.
+  // The outcome is intentionally opaque (Play policy) — nothing is returned.
+  requestReview?(): void;
+
   showToast(s: string): void;
-
-  showNotification(title: string, body: string): void;
-
-  showNotificationIfAppIsNotOpen?(title: string, body: string): void;
-
-  updateTaskData(s: string): void;
 
   // save
   saveToDbWrapped(key: string, value: string): Promise<void>;
 
-  saveToDb?(key: string, value: string): void; // @deprecated
+  saveToDb(rId: string, key: string, value: string): void;
 
-  saveToDbNew?(rId: string, key: string, value: string): void;
-
-  saveToDbCallback?(rId: string): void;
+  saveToDbCallback(rId: string): void;
 
   // load
   loadFromDbWrapped(key: string): Promise<string | null>;
 
-  loadFromDb?(key: string): void; // @deprecated
+  loadFromDb(rId: string, key: string): void;
 
-  loadFromDbNew?(rId: string, key: string): void;
-
-  loadFromDbCallback?(rId: string, data: string): void;
+  loadFromDbCallback(rId: string, data: string): void;
 
   // remove
   removeFromDbWrapped(key: string): Promise<void>;
 
-  removeFromDb?(rId: string, key: string): void; // @deprecated
+  removeFromDb(rId: string, key: string): void;
 
-  removeFromDbCallback?(rId: string): void;
+  removeFromDbCallback(rId: string): void;
 
   // clear db
   clearDbWrapped(): Promise<void>;
 
-  clearDb?(rId: string): void; // @deprecated
+  clearDb(rId: string): void; // @deprecated
+  clearDbCallback(rId: string): void;
 
-  clearDbCallback?(rId: string): void;
+  triggerGetShareData?(): void;
+  getPendingShareData?(): string | null;
 
-  // permanent notification
-  updatePermanentNotification?(
+  // Foreground service methods for background time tracking
+  startTrackingService?(taskId: string, taskTitle: string, timeSpentMs: number): void;
+  stopTrackingService?(): void;
+  updateTrackingService?(timeSpentMs: number): void;
+  getTrackingElapsed?(): string;
+  openAppNotificationSettings?(): void;
+
+  // Silent notification mirroring tracking on ANOTHER device (SuperSync
+  // tracking presence). Strings arrive pre-translated; same id updates in
+  // place. Self-destructs natively when updates stop (dead WS honesty).
+  updateRemoteTrackingNotification?(
     title: string,
-    // because java sucks, we have to do this
-    message: string, // '' => undefined
-    progress: number, // -1 => undefined; 999 => indeterminate; 333 => show play but no progress bar
+    text: string,
+    showStopAction: boolean,
   ): void;
+  cancelRemoteTrackingNotification?(): void;
 
-  // WebDAV
-  makeHttpRequestWrapped(
-    url: string,
-    method: string,
-    data: string,
-    username: string,
-    password: string,
-    readResponse: boolean,
-  ): Promise<object>;
-
-  makeHttpRequest?(
-    rId: string,
-    url: string,
-    method: string,
-    data: string,
-    username: string,
-    password: string,
-    readResponse: boolean,
+  // Foreground service methods for focus mode timer
+  startFocusModeService?(
+    title: string,
+    durationMs: number,
+    remainingMs: number,
+    isBreak: boolean,
+    isPaused: boolean,
+    taskTitle: string | null,
   ): void;
+  stopFocusModeService?(): void;
+  updateFocusModeService?(
+    title: string,
+    remainingMs: number,
+    isPaused: boolean,
+    isBreak: boolean,
+    taskTitle: string | null,
+  ): void;
+  // Read back the live focus session for cold-start/resume recovery (#7855).
+  // Returns a JSON string, or 'null' when no focus session is running.
+  getFocusModeElapsed?(): string;
+  // Device-local task clock owned by the Focus foreground service. Null freezes
+  // the last task so a paused session can still recover its task association.
+  updateFocusTask?(taskId: string | null, timeSpentMs: number, isTracking: boolean): void;
+  adjustFocusTaskTime?(taskId: string, timeSpentDeltaMs: number): void;
 
-  makeHttpRequestCallback(rId: string, result: { [key: string]: any }): void;
+  // Native reminder scheduling (snooze handled entirely in background)
+  scheduleNativeReminder?(
+    notificationId: number,
+    reminderId: string,
+    relatedId: string,
+    title: string,
+    reminderType: string,
+    triggerAtMs: number,
+    useAlarmStyle: boolean,
+    isOngoing: boolean,
+  ): void;
+  cancelNativeReminder?(notificationId: number): void;
 
-  isGrantedFilePermission(): boolean;
-  allowedFolderPath(): string;
-  grantFilePermissionWrapped(): Promise<object>;
-  grantFilePermission(rId: string): void;
-  grantFilePermissionCallBack(rId: string): void;
+  // Reminder tap queue - get task ID from notification tap (cold start)
+  getReminderTapQueue?(): string | null;
 
-  getFileRev(filePath: string): string;
-  readFile(filePath: string): string;
-  writeFile(filePath: string, data: string): string;
+  // Reminder done queue - get task IDs marked done from notifications
+  getReminderDoneQueue?(): string | null;
+
+  // Native capture inbox (startup quick-add overlay). Non-destructive read of a
+  // JSON array, or null if the inbox could not be read; see CaptureInbox.kt.
+  getPendingCaptures?(): string | null;
+  // Delete one capture after its task is persisted. Returns false on failure.
+  acknowledgeCapture?(id: string): boolean;
+
+  // Widget done queue - get pending done-state changes from the home screen
+  // widget as a JSON object string `{taskId: targetIsDone}` and clear the queue
+  getWidgetDoneQueue?(): string | null;
+
+  // Re-render the home screen widget from the current widget_data snapshot
+  updateWidget?(): void;
+
+  // Startup overlay
+  getStartupOverlayPartialText?(): string | null;
+  hideStartupOverlay?(): void;
+  dismissStartupOverlay?(): void;
 
   // added here only
-  onResume$: Subject<void>;
+  // ReplaySubject so cold-start onResume emissions arriving before the JS
+  // subscriber attaches are still delivered (relevant for tracking recovery
+  // after the WebView was killed in the background — issue #7390).
+  onResume$: ReplaySubject<void>;
   onPause$: Subject<void>;
   isInBackground$: Observable<boolean>;
-  onPauseCurrentTask$: Subject<void>;
-  onMarkCurrentTaskAsDone$: Subject<void>;
-  onAddNewTask$: Subject<void>;
+  isKeyboardShown$: Subject<boolean>;
+
+  onShareWithAttachment$: Subject<AndroidShareData>;
+
+  // Notification action callbacks
+  onPauseTracking$: Subject<void>;
+  onMarkTaskDone$: Subject<void>;
+  onRemoteTrackingStop$: Subject<void>;
+
+  // Focus mode notification action callbacks
+  onFocusPause$: Subject<void>;
+  onFocusResume$: Subject<void>;
+  onFocusSkip$: Subject<void>;
+  onFocusComplete$: Subject<void>;
+
+  // Focus mode timer completion (native service detected timer reached 0)
+  onFocusModeTimerComplete$: Subject<boolean>; // boolean indicates isBreak
+  onForegroundServiceStartFailed$: ReplaySubject<ForegroundServiceStartFailure>;
+
+  // Reminder notification action callbacks
+  onReminderTap$: ReplaySubject<string>; // emits taskId
+  onReminderDone$: ReplaySubject<string>; // emits taskId
+  onReminderSnooze$: ReplaySubject<{ taskId: string; newRemindAt: number }>; // emits snooze events
+  getReminderSnoozeQueue?(): string | null;
+
+  // Contentless "drain now" signal after a widget done-checkbox tap while the app
+  // is alive; the queued IDs are always pulled via getWidgetDoneQueue() (cold
+  // start/resume drains are triggered by onResume$ instead)
+  onWidgetDoneDrainRequest$: Subject<void>;
+
+  // Background sync credential bridge (for WorkManager-based reminder cancellation)
+  setSuperSyncCredentials?(baseUrl: string, accessToken: string): void;
+  clearSuperSyncCredentials?(): void;
+  // Mirrors the E2EE password so the background worker can decrypt op payloads;
+  // '' clears it. Optional: older APKs don't have it.
+  setSuperSyncEncryptionPassword?(password: string): void;
 }
+
+export type ForegroundServiceStartFailure = {
+  service: 'tracking' | 'focusMode';
+  reason: 'startNotAllowed' | 'promotionFailed';
+};
 
 // setInterval(() => {
 //   androidInterface.updatePermanentNotification?.(new Date().toString(), '', -1);
 // }, 7000);
 
 export const androidInterface: AndroidInterface = (window as any).SUPAndroid;
-export const IS_ANDROID_BACKUP_READY =
-  IS_ANDROID_WEB_VIEW &&
-  (typeof androidInterface?.saveToDb === 'function' ||
-    typeof androidInterface?.saveToDbNew === 'function');
 
 if (IS_ANDROID_WEB_VIEW) {
   if (!androidInterface) {
     throw new Error('Cannot initialize androidInterface');
   }
 
-  androidInterface.onResume$ = new Subject();
+  androidInterface.onResume$ = new ReplaySubject(1);
   androidInterface.onPause$ = new Subject();
-  androidInterface.onPauseCurrentTask$ = new Subject();
-  androidInterface.onMarkCurrentTaskAsDone$ = new Subject();
-  androidInterface.onAddNewTask$ = new Subject();
+  androidInterface.onPauseTracking$ = new Subject();
+  androidInterface.onMarkTaskDone$ = new Subject();
+  androidInterface.onRemoteTrackingStop$ = new Subject();
+  androidInterface.onFocusPause$ = new Subject();
+  androidInterface.onFocusResume$ = new Subject();
+  androidInterface.onFocusSkip$ = new Subject();
+  androidInterface.onFocusComplete$ = new Subject();
+  androidInterface.onFocusModeTimerComplete$ = new Subject();
+  androidInterface.onForegroundServiceStartFailed$ = new ReplaySubject(3);
+  androidInterface.onReminderTap$ = new ReplaySubject(5);
+  androidInterface.onReminderDone$ = new ReplaySubject(20);
+  androidInterface.onReminderSnooze$ = new ReplaySubject(20);
+  androidInterface.onWidgetDoneDrainRequest$ = new Subject();
+  androidInterface.onShareWithAttachment$ = new ReplaySubject(1);
+  androidInterface.isKeyboardShown$ = new BehaviorSubject(false);
 
   androidInterface.isInBackground$ = merge(
     androidInterface.onResume$.pipe(mapTo(false)),
@@ -132,61 +227,30 @@ if (IS_ANDROID_WEB_VIEW) {
     });
   };
 
-  if (androidInterface.saveToDbNew) {
-    androidInterface.saveToDbCallback = (rId: string) => {
-      requestMap[rId].resolve();
-      delete requestMap[rId];
-    };
-  }
-  androidInterface.saveToDbWrapped = (key: string, value: string): Promise<void> => {
-    if (androidInterface.saveToDbNew) {
-      const rId = nanoid();
-      androidInterface.saveToDbNew(rId, key, value);
-      return getRequestMapPromise(rId);
-      // legacy stuff, changed in newer versions of the android app
-      // TODO remove if gone
-    } else if (androidInterface.saveToDb) {
-      androidInterface.saveToDb(key, value);
-      return new Promise((resolve, reject) => {
-        // NOTE currently there is no error handling
-        (window as any).saveToDbCallback = () => {
-          resolve();
-        };
-      });
-    } else {
-      throw new Error('No android save to db interface');
-    }
+  androidInterface.saveToDbCallback = (rId: string) => {
+    requestMap[rId].resolve();
+    delete requestMap[rId];
   };
 
-  if (androidInterface.loadFromDbNew) {
-    androidInterface.loadFromDbCallback = (rId: string, k: string, result?: string) => {
-      requestMap[rId].resolve(result || null);
-      delete requestMap[rId];
-    };
-  }
+  androidInterface.saveToDbWrapped = (key: string, value: string): Promise<void> => {
+    const rId = nanoid();
+    androidInterface.saveToDb(rId, key, value);
+    return getRequestMapPromise(rId);
+  };
+
+  androidInterface.loadFromDbCallback = (rId: string, k: string, result?: string) => {
+    requestMap[rId].resolve(result || null);
+    delete requestMap[rId];
+  };
   androidInterface.loadFromDbWrapped = (key: string): Promise<string | null> => {
-    if (androidInterface.loadFromDbNew) {
-      const rId = nanoid();
-      androidInterface.loadFromDbNew(rId, key);
-      return getRequestMapPromise(rId);
-      // legacy stuff, changed in newer versions of the android app
-      // TODO remove if gone
-    } else if (androidInterface.loadFromDb) {
-      androidInterface.loadFromDb(key);
-      return new Promise((resolve, reject) => {
-        // NOTE currently there is no error handling
-        (window as any).loadFromDbCallback = (k: string, result?: string) => {
-          resolve(result || null);
-        };
-      });
-    } else {
-      throw new Error('No android loadFromDb interface');
-    }
+    const rId = nanoid();
+    androidInterface.loadFromDb(rId, key);
+    return getRequestMapPromise(rId);
   };
 
   androidInterface.removeFromDbWrapped = (key: string): Promise<void> => {
     const rId = nanoid();
-    androidInterface.removeFromDb?.(rId, key);
+    androidInterface.removeFromDb(rId, key);
     return getRequestMapPromise(rId);
   };
   androidInterface.removeFromDbCallback = (rId: string) => {
@@ -204,47 +268,61 @@ if (IS_ANDROID_WEB_VIEW) {
     delete requestMap[rId];
   };
 
-  if (androidInterface.makeHttpRequest) {
-    androidInterface.makeHttpRequestCallback = (rId: string, result: object) => {
-      requestMap[rId].resolve(result);
-      delete requestMap[rId];
-    };
-  }
-  androidInterface.makeHttpRequestWrapped = (
-    url: string,
-    method: string,
-    data: string,
-    username: string,
-    password: string,
-    readResponse: boolean,
-  ): Promise<object> => {
-    if (androidInterface.makeHttpRequest) {
-      const rId = nanoid();
-      androidInterface.makeHttpRequest(
-        rId,
-        url,
-        method,
-        data,
-        username,
-        password,
-        readResponse,
-      );
-      return getRequestMapPromise(rId);
-    } else {
-      throw new Error('No android makeHttpRequest interface');
+  // eslint-disable-next-line local-rules/no-user-content-in-logs -- grandfathered log baseline (2026-09), not yet triaged
+  DroidLog.log('Android Web View interfaces initialized', androidInterface);
+
+  // Pull-based: retrieve share data persisted in SharedPreferences (survives process death)
+  try {
+    const pendingShare = androidInterface.getPendingShareData?.();
+    if (pendingShare) {
+      const parsed = JSON.parse(pendingShare);
+      DroidLog.log('Pulled pending share data from SharedPreferences');
+      androidInterface.onShareWithAttachment$.next(parsed);
     }
-  };
+  } catch (e) {
+    DroidLog.err('Failed to parse pending share data', e);
+  }
 
-  androidInterface.grantFilePermissionWrapped = (): Promise<object> => {
-    const rId = nanoid();
-    androidInterface.grantFilePermission(rId);
-    return getRequestMapPromise(rId);
-  };
+  // Pull-based: retrieve queued tap task ID from notification tap (cold start)
+  try {
+    const tapTaskId = androidInterface.getReminderTapQueue?.();
+    if (tapTaskId) {
+      DroidLog.log('Pulled reminder tap queue from SharedPreferences', tapTaskId);
+      androidInterface.onReminderTap$.next(tapTaskId);
+    }
+  } catch (e) {
+    DroidLog.err('Failed to parse reminder tap queue', e);
+  }
 
-  androidInterface.grantFilePermissionCallBack = (rId: string) => {
-    requestMap[rId].resolve();
-    delete requestMap[rId];
-  };
+  // Pull-based: retrieve queued "Done" task IDs from notification actions
+  try {
+    const doneQueue = androidInterface.getReminderDoneQueue?.();
+    if (doneQueue) {
+      const taskIds: string[] = JSON.parse(doneQueue);
+      DroidLog.log('Pulled reminder done queue from SharedPreferences', taskIds);
+      for (const id of taskIds) {
+        androidInterface.onReminderDone$.next(id);
+      }
+    }
+  } catch (e) {
+    DroidLog.err('Failed to parse reminder done queue', e);
+  }
 
-  console.log('Android Web View interfaces initialized', androidInterface);
+  // Pull-based: retrieve queued snooze events from notification actions
+  try {
+    const snoozeQueue = androidInterface.getReminderSnoozeQueue?.();
+    if (snoozeQueue) {
+      const events: { taskId: string; newRemindAt: number }[] = JSON.parse(snoozeQueue);
+      // eslint-disable-next-line local-rules/no-user-content-in-logs -- grandfathered log baseline (2026-09), not yet triaged
+      DroidLog.log('Pulled reminder snooze queue from SharedPreferences', events);
+      for (const event of events) {
+        androidInterface.onReminderSnooze$.next(event);
+      }
+    }
+  } catch (e) {
+    DroidLog.err('Failed to parse reminder snooze queue', e);
+  }
+
+  // Push-based: sets isFrontendReady=true on native side for warm-start shares
+  androidInterface.triggerGetShareData?.();
 }

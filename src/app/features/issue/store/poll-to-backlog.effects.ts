@@ -1,26 +1,54 @@
-import { Injectable } from '@angular/core';
-import { Actions, createEffect, ofType } from '@ngrx/effects';
-import { EMPTY, merge, Observable } from 'rxjs';
-
-import { concatMap, filter, first, switchMap, takeUntil, tap } from 'rxjs/operators';
-import { ISSUE_PROVIDER_TYPES } from '../issue.const';
+import { Injectable, inject } from '@angular/core';
+import { createEffect, ofType } from '@ngrx/effects';
+import { LOCAL_ACTIONS } from '../../../util/local-actions.token';
+import { EMPTY, from, merge, Observable, timer } from 'rxjs';
+import {
+  catchError,
+  concatMap,
+  filter,
+  first,
+  switchMap,
+  takeUntil,
+  tap,
+} from 'rxjs/operators';
 import { IssueService } from '../issue.service';
 import { setActiveWorkContext } from '../../work-context/store/work-context.actions';
-import { updateProjectIssueProviderCfg } from '../../project/store/project.actions';
 import { WorkContextService } from '../../work-context/work-context.service';
 import { SyncTriggerService } from '../../../imex/sync/sync-trigger.service';
+import { Store } from '@ngrx/store';
+import { selectEnabledIssueProviders } from './issue-provider.selectors';
+import { IssueProvider } from '../issue.model';
+import { SnackService } from '../../../core/snack/snack.service';
+import { getErrorTxt } from '../../../util/get-error-text';
+import { DELAY_BEFORE_ISSUE_POLLING } from '../issue.const';
+import { IssueLog } from '../../../core/log';
+import { PluginIssueProviderRegistryService } from '../../../plugins/issue-provider/plugin-issue-provider-registry.service';
+import { skipDuringSyncWindow } from '../../../util/skip-during-sync-window.operator';
 
 @Injectable()
 export class PollToBacklogEffects {
+  private readonly _issueService = inject(IssueService);
+  private readonly _actions$ = inject(LOCAL_ACTIONS);
+  private readonly _workContextService = inject(WorkContextService);
+  private readonly _syncTriggerService = inject(SyncTriggerService);
+  private readonly _snackService = inject(SnackService);
+  private readonly _store = inject(Store);
+  private readonly _pluginRegistry = inject(PluginIssueProviderRegistryService);
+
+  /**
+   * Created here because the operator calls inject() -- the timers themselves are
+   * built lazily inside switchMap(), outside of any injection context.
+   */
+  private readonly _skipDuringSyncWindow = skipDuringSyncWindow<number>();
+
   pollToBacklogActions$: Observable<unknown> = this._actions$.pipe(
-    ofType(setActiveWorkContext, updateProjectIssueProviderCfg.type),
+    ofType(setActiveWorkContext),
   );
 
   pollToBacklogTriggerToProjectId$: Observable<string> =
     this._syncTriggerService.afterInitialSyncDoneAndDataLoadedInitially$.pipe(
       concatMap(() => this.pollToBacklogActions$),
       switchMap(() => this._workContextService.isActiveWorkContextProject$.pipe(first())),
-      // NOTE: it's important that the filter is on top level otherwise the subscription is not canceled
       filter((isProject) => isProject),
       switchMap(
         () =>
@@ -31,42 +59,107 @@ export class PollToBacklogEffects {
       filter((projectId) => !!projectId),
     );
 
-  pollNewIssuesToBacklog$: Observable<any> = createEffect(
+  pollNewIssuesToBacklog$: Observable<unknown> = createEffect(
     () =>
       this.pollToBacklogTriggerToProjectId$.pipe(
         switchMap((pId) =>
-          merge(
-            ...ISSUE_PROVIDER_TYPES.map((providerKey) =>
-              this._issueService
-                .isBacklogPollEnabledForProjectOnce$(providerKey, pId)
-                .pipe(
-                  switchMap((isEnabled) => {
-                    return isEnabled
-                      ? this._issueService.getPollTimer$(providerKey).pipe(
-                          // NOTE: required otherwise timer stays alive for filtered actions
-                          takeUntil(this.pollToBacklogActions$),
-                          tap(() => console.log('POLL ' + providerKey)),
-                          switchMap(() =>
-                            this._issueService.checkAndImportNewIssuesToBacklogForProject(
-                              providerKey,
-                              pId,
-                            ),
-                          ),
-                        )
-                      : EMPTY;
-                  }),
+          this._store.select(selectEnabledIssueProviders).pipe(
+            switchMap((enabledProviders: IssueProvider[]) => {
+              const matchingProviders = enabledProviders.filter(
+                (provider) =>
+                  provider.defaultProjectId === pId &&
+                  provider.isAutoAddToBacklog &&
+                  provider.pollingMode !== 'always' &&
+                  !this._pluginRegistry.getUseAgendaView(provider.issueProviderKey) &&
+                  this._issueService.getPollInterval(provider.issueProviderKey) > 0,
+              );
+              if (matchingProviders.length === 0) {
+                return EMPTY;
+              }
+              return merge(
+                ...matchingProviders.map((provider) =>
+                  this._createBacklogPollTimer(provider),
                 ),
-            ),
+              );
+            }),
           ),
         ),
       ),
     { dispatch: false },
   );
 
-  constructor(
-    private readonly _issueService: IssueService,
-    private readonly _actions$: Actions,
-    private readonly _workContextService: WorkContextService,
-    private readonly _syncTriggerService: SyncTriggerService,
-  ) {}
+  /**
+   * Polls for backlog import for providers with pollingMode 'always'.
+   * Starts once after initial sync and runs continuously, reacting only
+   * to provider configuration changes -- not to context switches.
+   */
+  pollNewIssuesToBacklogAlways$: Observable<unknown> = createEffect(
+    () =>
+      this._syncTriggerService.afterInitialSyncDoneAndDataLoadedInitially$.pipe(
+        switchMap(() =>
+          this._store.select(selectEnabledIssueProviders).pipe(
+            switchMap((enabledProviders: IssueProvider[]) => {
+              const alwaysProviders = enabledProviders.filter(
+                (provider) =>
+                  provider.pollingMode === 'always' &&
+                  provider.isAutoAddToBacklog &&
+                  !!provider.defaultProjectId &&
+                  !this._pluginRegistry.getUseAgendaView(provider.issueProviderKey) &&
+                  this._issueService.getPollInterval(provider.issueProviderKey) > 0,
+              );
+              if (alwaysProviders.length === 0) {
+                return EMPTY;
+              }
+              return merge(
+                ...alwaysProviders.map((provider) =>
+                  this._createBacklogPollTimer(provider, false),
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
+    { dispatch: false },
+  );
+
+  private _createBacklogPollTimer(
+    provider: IssueProvider,
+    stopOnContextSwitch = true,
+  ): Observable<unknown> {
+    const timer$ = timer(
+      DELAY_BEFORE_ISSUE_POLLING,
+      this._issueService.getPollInterval(provider.issueProviderKey),
+    );
+
+    return (
+      stopOnContextSwitch ? timer$.pipe(takeUntil(this.pollToBacklogActions$)) : timer$
+    ).pipe(
+      // The chain is only gated once at start, but every tick imports issues and can
+      // dispatch restoreTask for archived recurring tasks. Inside the sync window the
+      // reducer commits such a change while capture only buffers the action, so a
+      // failed drain would leave local state ahead of the op log (and the archive read
+      // may be stale mid-replay). Dropping the tick is safe: the next one retries.
+      this._skipDuringSyncWindow,
+      tap(() => IssueLog.log('POLL ' + provider.issueProviderKey)),
+      switchMap(() =>
+        from(
+          this._issueService.checkAndImportNewIssuesToBacklogForProject(
+            provider.issueProviderKey,
+            provider.id,
+            provider.pollingMode === 'always',
+          ),
+        ).pipe(
+          catchError((e) => {
+            IssueLog.err(e);
+            this._snackService.open({
+              type: 'ERROR',
+              // TODO translate
+              msg: `${provider.issueProviderKey}: Failed to poll new issues for backlog import – \n ${getErrorTxt(e)}`,
+            });
+            return EMPTY;
+          }),
+        ),
+      ),
+    );
+  }
 }

@@ -2,32 +2,31 @@ import {
   ChangeDetectionStrategy,
   Component,
   ElementRef,
+  inject,
   OnDestroy,
   OnInit,
-  ViewChild,
+  viewChild,
 } from '@angular/core';
 import { FieldType } from '@ngx-formly/core';
 import { Subscription } from 'rxjs';
 import { TranslateService } from '@ngx-translate/core';
+import { Log } from '../../core/log';
 
 @Component({
   selector: 'formly-translated-template',
   templateUrl: './formly-translated-template.component.html',
-  styleUrls: ['./formly-translated-template.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class FormlyTranslatedTemplateComponent
   extends FieldType
   implements OnInit, OnDestroy
 {
-  @ViewChild('tplWrapper', { static: true }) tplWrapper?: ElementRef;
+  private _translateService = inject(TranslateService);
+
+  readonly tplWrapper = viewChild<ElementRef>('tplWrapper');
 
   private _el?: HTMLElement;
   private _subs: Subscription = new Subscription();
-
-  constructor(private _translateService: TranslateService) {
-    super();
-  }
 
   ngOnInit(): void {
     if (!this.field.templateOptions) {
@@ -37,7 +36,7 @@ export class FormlyTranslatedTemplateComponent
 
     const translationId = this.field.templateOptions.text;
     if (!translationId) {
-      console.warn('No translation id provided');
+      Log.err('No translation id provided');
       return;
     }
 
@@ -53,20 +52,24 @@ export class FormlyTranslatedTemplateComponent
   }
 
   private _createTag(): void {
-    if (!this.field.templateOptions || !this.tplWrapper) {
+    const tplWrapper = this.tplWrapper();
+    if (!this.field.templateOptions || !tplWrapper) {
       throw new Error();
     }
     const tag = this.field.templateOptions.tag || 'div';
-    const tplWrapperEl = this.tplWrapper.nativeElement;
+    const tplWrapperEl = tplWrapper.nativeElement;
 
     if (tplWrapperEl) {
       this._el = document.createElement(tag);
 
       if (this.field.templateOptions.class) {
-        (this._el as HTMLElement).classList.add(this.field.templateOptions.class);
+        // Use `className` so single tokens AND space-separated lists work;
+        // `classList.add(str)` would reject a multi-token string. Safe here
+        // because `_el` was freshly created above and has no prior classes.
+        (this._el as HTMLElement).className = String(this.field.templateOptions.class);
       }
 
-      this.tplWrapper.nativeElement.append(this._el);
+      tplWrapper.nativeElement.append(this._el);
     }
   }
 }

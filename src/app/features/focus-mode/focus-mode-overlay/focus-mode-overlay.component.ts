@@ -1,21 +1,25 @@
-import { ChangeDetectionStrategy, Component, OnDestroy } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, OnDestroy } from '@angular/core';
 import { TaskService } from '../../tasks/task.service';
-import { Observable, Subject } from 'rxjs';
-import { first, takeUntil } from 'rxjs/operators';
+import { Subject } from 'rxjs';
 import { GlobalConfigService } from '../../config/global-config.service';
-import { Router } from '@angular/router';
 import { expandAnimation } from '../../../ui/animations/expand.ani';
-import { FocusModePage } from '../focus-mode.const';
 import { Store } from '@ngrx/store';
-import { selectFocusSessionActivePage } from '../store/focus-mode.selectors';
-import {
-  cancelFocusSession,
-  setFocusSessionActivePage,
-} from '../store/focus-mode.actions';
+import { cancelFocusSession, hideFocusOverlay } from '../store/focus-mode.actions';
 import { fadeInAnimation } from '../../../ui/animations/fade.ani';
 import { warpAnimation, warpInAnimation } from '../../../ui/animations/warp.ani';
 import { T } from 'src/app/t.const';
-import { selectIsPomodoroEnabled } from '../../config/store/global-config.reducer';
+import { BannerComponent } from '../../../core/banner/banner/banner.component';
+import { MatIconButton } from '@angular/material/button';
+import { MatIcon } from '@angular/material/icon';
+import { MatDialog } from '@angular/material/dialog';
+import { FocusModeMainComponent } from '../focus-mode-main/focus-mode-main.component';
+import { FocusModeSessionDoneComponent } from '../focus-mode-session-done/focus-mode-session-done.component';
+import { FocusModeBreakComponent } from '../focus-mode-break/focus-mode-break.component';
+import { FocusModeService } from '../focus-mode.service';
+import { FocusScreen } from '../focus-mode.model';
+import { isInputElement } from '../../../util/dom-element';
+import { TranslatePipe } from '@ngx-translate/core';
+import { CdkTrapFocus } from '@angular/cdk/a11y';
 
 @Component({
   selector: 'focus-mode-overlay',
@@ -23,55 +27,51 @@ import { selectIsPomodoroEnabled } from '../../config/store/global-config.reduce
   styleUrls: ['./focus-mode-overlay.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
   animations: [expandAnimation, fadeInAnimation, warpAnimation, warpInAnimation],
+  imports: [
+    BannerComponent,
+    MatIconButton,
+    MatIcon,
+    FocusModeMainComponent,
+    FocusModeSessionDoneComponent,
+    FocusModeBreakComponent,
+    TranslatePipe,
+    CdkTrapFocus,
+  ],
 })
 export class FocusModeOverlayComponent implements OnDestroy {
-  FocusModePage: typeof FocusModePage = FocusModePage;
+  readonly taskService = inject(TaskService);
+  readonly focusModeService = inject(FocusModeService);
 
-  activePage$ = this._store.select(selectFocusSessionActivePage);
+  private readonly _globalConfigService = inject(GlobalConfigService);
+  private readonly _store = inject(Store);
+  private readonly _matDialog = inject(MatDialog);
 
-  isPomodoroEnabled$: Observable<boolean> = this._store.select(selectIsPomodoroEnabled);
+  FocusScreen: typeof FocusScreen = FocusScreen;
+  activePage = this.focusModeService.currentScreen;
+  isSessionRunning = this.focusModeService.isSessionRunning;
 
-  activatePage?: FocusModePage;
   T: typeof T = T;
 
   private _onDestroy$ = new Subject<void>();
+  isSessionPaused = this.focusModeService.isSessionPaused;
+
   private _closeOnEscapeKeyListener = (ev: KeyboardEvent): void => {
-    if (ev.key === 'Escape') {
-      if (
-        this.activatePage === FocusModePage.TaskSelection ||
-        this.activatePage === FocusModePage.DurationSelection
-      ) {
-        this.cancelFocusSession();
-      }
+    if (
+      ev.key === 'Escape' &&
+      !ev.defaultPrevented &&
+      !this._isInputTarget(ev.target) &&
+      this._matDialog.openDialogs.length === 0
+    ) {
+      ev.preventDefault();
+      this.closeOverlay();
     }
   };
 
-  constructor(
-    public readonly taskService: TaskService,
-    private readonly _globalConfigService: GlobalConfigService,
-    private readonly _store: Store,
-    private readonly _router: Router,
-  ) {
+  constructor() {
     document.addEventListener('keydown', this._closeOnEscapeKeyListener);
 
-    this.taskService.currentTask$
-      .pipe(first(), takeUntil(this._onDestroy$))
-      .subscribe((task) => {
-        if (!task) {
-          this._store.dispatch(
-            setFocusSessionActivePage({ focusActivePage: FocusModePage.TaskSelection }),
-          );
-        } else {
-          this._store.dispatch(
-            setFocusSessionActivePage({
-              focusActivePage: FocusModePage.DurationSelection,
-            }),
-          );
-        }
-      });
-    this.activePage$.pipe(takeUntil(this._onDestroy$)).subscribe((activePage) => {
-      this.activatePage = activePage;
-    });
+    // No need to navigate anywhere - Main screen handles both pre-session and active session states
+    // Just stay on the current screen
   }
 
   ngOnDestroy(): void {
@@ -84,17 +84,17 @@ export class FocusModeOverlayComponent implements OnDestroy {
     window.history.back();
   }
 
+  closeOverlay(): void {
+    // The header focus-button indicator takes over once the overlay is hidden
+    // and a session/break is in flight, so we no longer need to spawn a banner.
+    this._store.dispatch(hideFocusOverlay());
+  }
+
   cancelFocusSession(): void {
     this._store.dispatch(cancelFocusSession());
   }
 
-  deactivatePomodoro(): void {
-    this._globalConfigService.updateSection('pomodoro', { isEnabled: false });
-  }
-
-  leaveProcrastinationHelp(): void {
-    this._store.dispatch(
-      setFocusSessionActivePage({ focusActivePage: FocusModePage.Main }),
-    );
+  private _isInputTarget(target: EventTarget | null): boolean {
+    return target instanceof HTMLElement && isInputElement(target);
   }
 }

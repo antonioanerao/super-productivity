@@ -1,223 +1,353 @@
-import { Injectable } from '@angular/core';
-import { Actions, createEffect, ofType } from '@ngrx/effects';
-import {
-  deleteTask,
-  deleteTasks,
-  reScheduleTask,
-  scheduleTask,
-  unScheduleTask,
-  updateTask,
-  updateTaskTags,
-} from './task.actions';
-import { concatMap, filter, map, mergeMap, tap } from 'rxjs/operators';
-import { ReminderService } from '../../reminder/reminder.service';
+import { inject, Injectable } from '@angular/core';
+import { createEffect, ofType } from '@ngrx/effects';
+import { LOCAL_ACTIONS } from '../../../util/local-actions.token';
+import { TaskSharedActions } from '../../../root-store/meta/task-shared.actions';
+import { concatMap, filter, tap } from 'rxjs/operators';
 import { truncate } from '../../../util/truncate';
+import { devError } from '../../../util/dev-error';
 import { T } from '../../../t.const';
 import { SnackService } from '../../../core/snack/snack.service';
-import { TODAY_TAG } from '../../tag/tag.const';
-import { EMPTY } from 'rxjs';
 import { TaskService } from '../task.service';
-import { getDateTimeFromClockString } from '../../../util/get-date-time-from-clock-string';
-import { DEFAULT_DAY_START } from '../../config/default-global-config.const';
-import { moveProjectTaskToBacklogListAuto } from '../../project/store/project.actions';
+import { Store } from '@ngrx/store';
+import { LocaleDatePipe } from 'src/app/ui/pipes/locale-date.pipe';
+import {
+  IS_ANDROID_WEB_VIEW,
+  IS_ANDROID_WEB_VIEW_TOKEN,
+} from '../../../util/is-android-web-view';
+import { androidInterface } from '../../android/android-interface';
+import { generateNotificationId } from '../../android/android-notification-id.util';
+import { PlannerActions } from '../../planner/store/planner.actions';
+import { TaskLog } from '../../../core/log';
+import { TaskMultiSelectService } from '../task-multi-select.service';
 
 @Injectable()
 export class TaskReminderEffects {
-  addTaskReminder$: any = createEffect(() =>
-    this._actions$.pipe(
-      ofType(scheduleTask),
-      tap(({ task }) =>
-        this._snackService.open({
-          type: 'SUCCESS',
-          translateParams: {
-            title: truncate(task.title),
-          },
-          msg: T.F.TASK.S.REMINDER_ADDED,
-          ico: 'schedule',
+  private _localActions$ = inject(LOCAL_ACTIONS);
+  private _snackService = inject(SnackService);
+  private _taskService = inject(TaskService);
+  private _store = inject(Store);
+  private _datePipe = inject(LocaleDatePipe);
+  private _isAndroidWebView = inject(IS_ANDROID_WEB_VIEW_TOKEN);
+  private _taskMultiSelectService = inject(TaskMultiSelectService);
+
+  snack$ = createEffect(
+    () =>
+      this._localActions$.pipe(
+        ofType(TaskSharedActions.scheduleTaskWithTime),
+        // A bulk action shows one summary snack instead of one per task.
+        filter(() => !this._taskMultiSelectService.isBulkFeedbackSuppressed()),
+        tap(({ task, remindAt, dueWithTime }) => {
+          if (!Number.isFinite(dueWithTime)) {
+            devError(
+              'scheduleTaskWithTime dispatched with invalid dueWithTime: ' + dueWithTime,
+            );
+          }
+          const formattedDate = this._datePipe.transform(dueWithTime, 'short');
+          this._snackService.open({
+            type: 'SUCCESS',
+            translateParams: {
+              title: truncate(task.title),
+              date: formattedDate || '',
+            },
+            msg: T.F.TASK.S.REMINDER_ADDED,
+            ico: remindAt ? 'alarm' : 'schedule',
+          });
         }),
       ),
-      mergeMap(({ task, remindAt, isMoveToBacklog }) => {
-        if (isMoveToBacklog && !task.projectId) {
-          throw new Error('Move to backlog not possible for non project tasks');
-        }
-        if (typeof remindAt !== 'number') {
-          return EMPTY;
-        }
+    { dispatch: false },
+  );
 
-        const reminderId = this._reminderService.addReminder(
-          'TASK',
-          task.id,
-          truncate(task.title),
-          remindAt,
-        );
-        const isRemoveFromToday = isMoveToBacklog && task.tagIds.includes(TODAY_TAG.id);
+  // NOTE: autoMoveToBacklog is now handled atomically in the meta-reducer
+  // (task-shared-scheduling.reducer.ts) to ensure atomic consistency.
+  // The isMoveToBacklog flag in scheduleTaskWithTime action is processed
+  // directly in handleScheduleTaskWithTime().
 
-        return [
-          updateTask({
-            task: { id: task.id, changes: { reminderId } },
+  updateTaskReminderSnack$ = createEffect(
+    () =>
+      this._localActions$.pipe(
+        ofType(TaskSharedActions.reScheduleTaskWithTime),
+        filter(({ remindAt }) => typeof remindAt === 'number'),
+        tap(({ task }) =>
+          this._snackService.open({
+            type: 'SUCCESS',
+            translateParams: {
+              title: truncate(task.title),
+            },
+            msg: T.F.TASK.S.REMINDER_UPDATED,
+            ico: 'schedule',
           }),
-          ...(isMoveToBacklog
-            ? [
-                moveProjectTaskToBacklogListAuto({
-                  taskId: task.id,
-                  projectId: task.projectId as string,
-                }),
-              ]
-            : []),
-          ...(isRemoveFromToday
-            ? [
-                updateTaskTags({
-                  task,
-                  newTagIds: task.tagIds.filter((tagId) => tagId !== TODAY_TAG.id),
-                  oldTagIds: task.tagIds,
-                }),
-              ]
-            : []),
-        ];
-      }),
-    ),
+        ),
+      ),
+    { dispatch: false },
   );
 
-  updateTaskReminder$: any = createEffect(() =>
-    this._actions$.pipe(
-      ofType(reScheduleTask),
-      filter(({ task, remindAt }) => typeof remindAt === 'number' && !!task.reminderId),
-      tap(({ task, remindAt }) => {
-        this._reminderService.updateReminder(task.reminderId as string, {
-          remindAt,
-          title: task.title,
-        });
-      }),
-      tap(({ task }) =>
-        this._snackService.open({
-          type: 'SUCCESS',
-          translateParams: {
-            title: truncate(task.title),
-          },
-          msg: T.F.TASK.S.REMINDER_UPDATED,
-          ico: 'schedule',
+  // NOTE: autoMoveToBacklogOnReschedule is now handled atomically in the meta-reducer
+  // (task-shared-scheduling.reducer.ts) to ensure atomic consistency.
+  // The isMoveToBacklog flag in reScheduleTaskWithTime action is processed
+  // directly in handleScheduleTaskWithTime().
+
+  unscheduleDoneTask$ = createEffect(
+    () =>
+      this._localActions$.pipe(
+        ofType(TaskSharedActions.updateTask),
+        filter(({ task }) => !!task.changes.isDone),
+        concatMap(({ task }) => this._taskService.getByIdOnce$(task.id as string)),
+        tap((task) => {
+          if (task?.remindAt) {
+            // On Android, immediately cancel native reminder to prevent notifications
+            // for done tasks. This is necessary because the reactive cancellation
+            // via reminders$ observable can have a delay.
+            if (IS_ANDROID_WEB_VIEW) {
+              try {
+                const notificationId = generateNotificationId(task.id);
+                androidInterface.cancelNativeReminder?.(notificationId);
+              } catch (e) {
+                TaskLog.err('Failed to cancel native reminder:', e);
+              }
+            }
+
+            this._store.dispatch(
+              TaskSharedActions.dismissReminderOnly({
+                id: task.id,
+              }),
+            );
+          }
+
+          // Clear deadline reminder when task is done (keep the deadline date for reference)
+          if (task?.deadlineRemindAt) {
+            if (IS_ANDROID_WEB_VIEW) {
+              try {
+                const notificationId = generateNotificationId(task.id + '_deadline');
+                androidInterface.cancelNativeReminder?.(notificationId);
+              } catch (e) {
+                TaskLog.err('Failed to cancel native deadline reminder:', e);
+              }
+            }
+
+            this._store.dispatch(
+              TaskSharedActions.clearDeadlineReminder({ taskId: task.id }),
+            );
+          }
         }),
       ),
-      mergeMap(({ task, remindAt, isMoveToBacklog }) => {
-        if (isMoveToBacklog && !task.projectId) {
-          throw new Error('Move to backlog not possible for non project tasks');
-        }
-        if (typeof remindAt !== 'number') {
-          return EMPTY;
-        }
-        const isRemoveFromToday = isMoveToBacklog && task.tagIds.includes(TODAY_TAG.id);
-        return [
-          ...(isMoveToBacklog
-            ? [
-                moveProjectTaskToBacklogListAuto({
-                  taskId: task.id,
-                  projectId: task.projectId as string,
-                }),
-              ]
-            : []),
-          ...(isRemoveFromToday
-            ? [
-                updateTaskTags({
-                  task,
-                  newTagIds: task.tagIds.filter((tagId) => tagId !== TODAY_TAG.id),
-                  oldTagIds: task.tagIds,
-                }),
-              ]
-            : []),
-        ];
-      }),
-    ),
+    { dispatch: false },
   );
 
-  removeTaskReminder$: any = createEffect(() =>
-    this._actions$.pipe(
-      ofType(unScheduleTask),
-      filter(({ reminderId }) => !!reminderId),
-      tap(({ isSkipToast }) => {
-        if (!isSkipToast) {
+  unscheduleSnack$ = createEffect(
+    () =>
+      this._localActions$.pipe(
+        ofType(TaskSharedActions.unscheduleTask),
+        filter(({ isSkipToast }) => !isSkipToast),
+        tap(() => {
           this._snackService.open({
             type: 'SUCCESS',
             msg: T.F.TASK.S.REMINDER_DELETED,
             ico: 'schedule',
           });
-        }
-      }),
-      map(({ id, reminderId }) => {
-        this._reminderService.removeReminder(reminderId as string);
-        return updateTask({
-          task: {
-            id,
-            changes: { reminderId: null, plannedAt: null },
-          },
-        });
-      }),
-    ),
+        }),
+      ),
+    { dispatch: false },
   );
 
-  clearReminders: any = createEffect(
+  setDeadlineSnack$ = createEffect(
     () =>
-      this._actions$.pipe(
-        ofType(deleteTask),
-        tap(({ task }) => {
-          const deletedTaskIds = [task.id, ...task.subTaskIds];
-          deletedTaskIds.forEach((id) => {
-            this._reminderService.removeReminderByRelatedIdIfSet(id);
+      this._localActions$.pipe(
+        ofType(TaskSharedActions.setDeadline),
+        // A bulk action shows one summary snack instead of one per task;
+        // a programmatic write (REST API) opts out via `isSkipSnack`.
+        filter(
+          ({ isSkipSnack }) =>
+            !isSkipSnack && !this._taskMultiSelectService.isBulkFeedbackSuppressed(),
+        ),
+        tap(({ deadlineDay, deadlineWithTime }) => {
+          const formattedDate = deadlineWithTime
+            ? this._datePipe.transform(deadlineWithTime, 'short')
+            : deadlineDay
+              ? this._datePipe.transform(deadlineDay, 'shortDate')
+              : '';
+          this._snackService.open({
+            type: 'SUCCESS',
+            translateParams: { date: formattedDate || '' },
+            msg: T.F.TASK.S.DEADLINE_SET,
+            ico: 'flag',
           });
         }),
       ),
     { dispatch: false },
   );
-  clearMultipleReminders: any = createEffect(
+
+  removeDeadlineSnack$ = createEffect(
     () =>
-      this._actions$.pipe(
-        ofType(deleteTasks),
-        tap(({ taskIds }) => {
-          this._reminderService.removeRemindersByRelatedIds(taskIds);
+      this._localActions$.pipe(
+        ofType(TaskSharedActions.removeDeadline),
+        // A bulk action shows one summary snack instead of one per task;
+        // a programmatic write (REST API) opts out via `isSkipSnack`.
+        filter(
+          ({ isSkipSnack }) =>
+            !isSkipSnack && !this._taskMultiSelectService.isBulkFeedbackSuppressed(),
+        ),
+        tap(() => {
+          this._snackService.open({
+            type: 'SUCCESS',
+            msg: T.F.TASK.S.DEADLINE_REMOVED,
+            ico: 'flag',
+          });
         }),
       ),
     { dispatch: false },
   );
 
-  unscheduleDoneTask$: any = createEffect(
+  dismissReminderSnack$ = createEffect(
     () =>
-      this._actions$.pipe(
-        ofType(updateTask),
-        filter(({ task }) => !!task.changes.isDone),
-        concatMap(({ task }) => this._taskService.getByIdOnce$(task.id as string)),
-        tap((task) => {
-          if (task.reminderId) {
-            this._taskService.unScheduleTask(task.id, task.reminderId);
+      this._localActions$.pipe(
+        ofType(TaskSharedActions.dismissReminderOnly),
+        // A background write (issue-provider poll) opts out via `isSkipSnack`.
+        filter(({ isSkipSnack }) => !isSkipSnack),
+        tap(() => {
+          this._snackService.open({
+            type: 'SUCCESS',
+            msg: T.F.TASK.S.REMINDER_DELETED,
+            ico: 'schedule',
+          });
+        }),
+      ),
+    { dispatch: false },
+  );
+
+  // Cancel native Android reminders when reminder is removed or dismissed
+  // Uses injection token with filter for testability (unlike other Android effects)
+  cancelNativeReminderOnUnschedule$ = createEffect(
+    () =>
+      this._localActions$.pipe(
+        ofType(
+          TaskSharedActions.unscheduleTask,
+          TaskSharedActions.dismissReminderOnly,
+          TaskSharedActions.removeDeadline,
+          TaskSharedActions.clearDeadlineReminder,
+        ),
+        filter(() => this._isAndroidWebView),
+        tap((action) => {
+          const taskId = 'id' in action ? action.id : action.taskId;
+          try {
+            const notificationId = generateNotificationId(taskId);
+            androidInterface.cancelNativeReminder?.(notificationId);
+            // Also cancel the deadline-specific notification if it exists
+            if ('taskId' in action) {
+              const deadlineNotificationId = generateNotificationId(taskId + '_deadline');
+              androidInterface.cancelNativeReminder?.(deadlineNotificationId);
+            }
+          } catch (e) {
+            TaskLog.err('Failed to cancel native reminder:', e);
           }
         }),
       ),
     { dispatch: false },
   );
 
-  unscheduleScheduledForDayWhenAddedToToday$: any = createEffect(
+  // Cancel native Android reminders when reminder dialog actions are taken
+  // (snooze, add to today, plan for tomorrow)
+  cancelNativeReminderOnDialogAction$ = createEffect(
     () =>
-      this._actions$.pipe(
-        ofType(updateTaskTags),
-        filter(({ newTagIds }) => !!newTagIds && newTagIds.includes(TODAY_TAG.id)),
-        tap(({ task }) => {
-          if (
-            task.reminderId &&
-            task.plannedAt &&
-            // NOTE this could be an alternative approach
-            // task.plannedAt === getDateTimeFromClockString(DEFAULT_DAY_START, new Date())
-            task.plannedAt ===
-              getDateTimeFromClockString(DEFAULT_DAY_START, task.plannedAt)
-          ) {
-            this._taskService.unScheduleTask(task.id, task.reminderId, true);
-          }
+      this._localActions$.pipe(
+        ofType(
+          TaskSharedActions.reScheduleTaskWithTime,
+          TaskSharedActions.planTasksForToday,
+          PlannerActions.planTaskForDay,
+        ),
+        filter(() => this._isAndroidWebView),
+        tap((action) => {
+          const ids = 'taskIds' in action ? action.taskIds : [action.task.id];
+          ids.forEach((id) => {
+            try {
+              const notificationId = generateNotificationId(id);
+              androidInterface.cancelNativeReminder?.(notificationId);
+            } catch (e) {
+              TaskLog.err('Failed to cancel native reminder:', e);
+            }
+          });
         }),
       ),
     { dispatch: false },
   );
 
-  constructor(
-    private _actions$: Actions,
-    private _reminderService: ReminderService,
-    private _snackService: SnackService,
-    private _taskService: TaskService,
-  ) {}
+  // Cancel native Android reminders when tasks are deleted
+  cancelNativeRemindersOnDelete$ =
+    IS_ANDROID_WEB_VIEW &&
+    createEffect(
+      () =>
+        this._localActions$.pipe(
+          ofType(TaskSharedActions.deleteTask),
+          tap(({ task }) => {
+            const deletedTaskIds = [task.id, ...task.subTaskIds];
+            deletedTaskIds.forEach((id) => {
+              try {
+                androidInterface.cancelNativeReminder?.(generateNotificationId(id));
+                androidInterface.cancelNativeReminder?.(
+                  generateNotificationId(id + '_deadline'),
+                );
+              } catch (e) {
+                TaskLog.err('Failed to cancel native reminder:', e);
+              }
+            });
+          }),
+        ),
+      { dispatch: false },
+    );
+
+  // Cancel native Android reminders when multiple tasks are deleted
+  cancelNativeRemindersOnBulkDelete$ =
+    IS_ANDROID_WEB_VIEW &&
+    createEffect(
+      () =>
+        this._localActions$.pipe(
+          ofType(TaskSharedActions.deleteTasks),
+          tap(({ taskIds }) => {
+            taskIds.forEach((id) => {
+              try {
+                androidInterface.cancelNativeReminder?.(generateNotificationId(id));
+                androidInterface.cancelNativeReminder?.(
+                  generateNotificationId(id + '_deadline'),
+                );
+              } catch (e) {
+                TaskLog.err('Failed to cancel native reminder:', e);
+              }
+            });
+          }),
+        ),
+      { dispatch: false },
+    );
+
+  // Cancel native Android reminders when tasks are archived
+  cancelNativeRemindersOnArchive$ =
+    IS_ANDROID_WEB_VIEW &&
+    createEffect(
+      () =>
+        this._localActions$.pipe(
+          ofType(TaskSharedActions.moveToArchive),
+          tap(({ tasks }) => {
+            tasks.forEach((task) => {
+              try {
+                androidInterface.cancelNativeReminder?.(generateNotificationId(task.id));
+                androidInterface.cancelNativeReminder?.(
+                  generateNotificationId(task.id + '_deadline'),
+                );
+              } catch (e) {
+                TaskLog.err('Failed to cancel native reminder:', e);
+              }
+              // Also cancel for subtasks
+              task.subTaskIds?.forEach((subId) => {
+                try {
+                  androidInterface.cancelNativeReminder?.(generateNotificationId(subId));
+                  androidInterface.cancelNativeReminder?.(
+                    generateNotificationId(subId + '_deadline'),
+                  );
+                } catch (e) {
+                  TaskLog.err('Failed to cancel native reminder:', e);
+                }
+              });
+            });
+          }),
+        ),
+      { dispatch: false },
+    );
 }

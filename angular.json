@@ -20,13 +20,14 @@
       },
       "architect": {
         "build": {
-          "builder": "@angular-devkit/build-angular:browser",
+          "builder": "@angular-devkit/build-angular:application",
           "options": {
             "aot": true,
-            "outputPath": "dist",
+            "outputPath": {
+              "base": ".tmp/angular-dist"
+            },
             "index": "src/index.html",
-            "main": "src/main.ts",
-            "polyfills": "src/polyfills.ts",
+            "polyfills": ["src/polyfills.ts"],
             "tsConfig": "src/tsconfig.app.json",
             "preserveSymlinks": true,
             "assets": [
@@ -37,31 +38,49 @@
             ],
             "styles": ["src/styles.scss"],
             "scripts": [],
-            "webWorkerTsConfig": "src/tsconfig.worker.json"
+            "webWorkerTsConfig": "src/tsconfig.worker.json",
+            "browser": "src/main.ts",
+            "stylePreprocessorOptions": {
+              "includePaths": [".", "src", "src/styles"]
+            },
+            "allowedCommonJsDependencies": [
+              "typia",
+              "electron-log",
+              "stacktrace-js",
+              "stack-generator",
+              "stacktrace-gps",
+              "error-stack-parser",
+              "chrono-node",
+              "dayjs",
+              "query-string"
+            ]
           },
           "configurations": {
             "development": {
               "budgets": [
                 {
                   "type": "anyComponentStyle",
-                  "maximumWarning": "6kb"
+                  "maximumWarning": "20kb"
                 }
               ],
-              "buildOptimizer": false,
               "optimization": false,
-              "vendorChunk": true,
               "extractLicenses": false,
               "sourceMap": true,
               "namedChunks": false,
               "aot": false,
-              "serviceWorker": true
+              "serviceWorker": "ngsw-config.json"
             },
             "production": {
               "baseHref": "",
               "budgets": [
                 {
+                  "type": "initial",
+                  "maximumWarning": "5.5mb",
+                  "maximumError": "6mb"
+                },
+                {
                   "type": "anyComponentStyle",
-                  "maximumWarning": "6kb"
+                  "maximumWarning": "20kb"
                 }
               ],
               "fileReplacements": [
@@ -74,7 +93,7 @@
                 "scripts": true,
                 "styles": {
                   "minify": true,
-                  "inlineCritical": false
+                  "inlineCritical": true
                 },
                 "fonts": true
               },
@@ -83,15 +102,22 @@
               "namedChunks": false,
               "aot": true,
               "extractLicenses": true,
-              "vendorChunk": false,
-              "buildOptimizer": true,
-              "serviceWorker": false
+              "serviceWorker": "ngsw-config.json"
             },
             "productionWeb": {
+              "outputPath": {
+                "base": "dist",
+                "browser": "browser"
+              },
               "budgets": [
                 {
+                  "type": "initial",
+                  "maximumWarning": "5.5mb",
+                  "maximumError": "6mb"
+                },
+                {
                   "type": "anyComponentStyle",
-                  "maximumWarning": "6kb"
+                  "maximumWarning": "20kb"
                 }
               ],
               "fileReplacements": [
@@ -104,7 +130,7 @@
                 "scripts": true,
                 "styles": {
                   "minify": true,
-                  "inlineCritical": false
+                  "inlineCritical": true
                 },
                 "fonts": true
               },
@@ -113,29 +139,32 @@
               "namedChunks": false,
               "aot": true,
               "extractLicenses": true,
-              "vendorChunk": false,
-              "buildOptimizer": true,
-              "serviceWorker": true
+              "serviceWorker": "ngsw-config.json"
             },
             "stage": {
               "baseHref": "",
               "budgets": [
                 {
+                  "type": "initial",
+                  "maximumWarning": "5.5mb",
+                  "maximumError": "6mb"
+                },
+                {
                   "type": "anyComponentStyle",
-                  "maximumWarning": "6kb"
+                  "maximumWarning": "20kb"
                 }
               ],
               "fileReplacements": [
                 {
                   "replace": "src/environments/environment.ts",
-                  "with": "src/environments/environment.prod.ts"
+                  "with": "src/environments/environment.stage.ts"
                 }
               ],
               "optimization": {
                 "scripts": true,
                 "styles": {
                   "minify": true,
-                  "inlineCritical": false
+                  "inlineCritical": true
                 },
                 "fonts": true
               },
@@ -144,28 +173,30 @@
               "namedChunks": false,
               "aot": true,
               "extractLicenses": true,
-              "vendorChunk": false,
-              "buildOptimizer": true,
               "serviceWorker": false
             },
             "stageWeb": {
+              "outputPath": {
+                "base": "dist",
+                "browser": "browser"
+              },
               "budgets": [
                 {
                   "type": "anyComponentStyle",
-                  "maximumWarning": "6kb"
+                  "maximumWarning": "20kb"
                 }
               ],
               "fileReplacements": [
                 {
                   "replace": "src/environments/environment.ts",
-                  "with": "src/environments/environment.prod.ts"
+                  "with": "src/environments/environment.stage.ts"
                 }
               ],
               "optimization": {
                 "scripts": true,
                 "styles": {
                   "minify": true,
-                  "inlineCritical": false
+                  "inlineCritical": true
                 },
                 "fonts": true
               },
@@ -174,24 +205,22 @@
               "namedChunks": false,
               "aot": true,
               "extractLicenses": true,
-              "vendorChunk": false,
-              "buildOptimizer": true,
-              "serviceWorker": true
+              "serviceWorker": "ngsw-config.json"
             }
           }
         },
         "serve": {
           "builder": "@angular-devkit/build-angular:dev-server",
           "options": {
-            "browserTarget": "sp2:build",
-            "open": false
+            "open": false,
+            "buildTarget": "sp2:build"
           },
           "configurations": {
             "production": {
-              "browserTarget": "sp2:build:production"
+              "buildTarget": "sp2:build:production"
             },
             "development": {
-              "browserTarget": "sp2:build:development"
+              "buildTarget": "sp2:build:development"
             }
           },
           "defaultConfiguration": "development"
@@ -199,14 +228,14 @@
         "extract-i18n": {
           "builder": "@angular-devkit/build-angular:extract-i18n",
           "options": {
-            "browserTarget": "sp2:build"
+            "buildTarget": "sp2:build"
           }
         },
         "test": {
           "builder": "@angular-devkit/build-angular:karma",
           "options": {
             "main": "src/test.ts",
-            "polyfills": "src/polyfills.ts",
+            "polyfills": ["zone.js", "zone.js/testing", "src/polyfills.ts"],
             "tsConfig": "src/tsconfig.spec.json",
             "preserveSymlinks": true,
             "karmaConfig": "src/karma.conf.js",
@@ -219,7 +248,14 @@
           "builder": "@angular-eslint/builder:lint",
           "options": {
             "cache": true,
-            "lintFilePatterns": ["src/**/*.ts", "src/**/*.html"]
+            "lintFilePatterns": [
+              "src/**/*.ts",
+              "src/**/*.html",
+              "e2e/**/*.ts",
+              "electron/**/*.ts",
+              "packages/sync-core/**/*.ts",
+              "packages/sync-providers/**/*.ts"
+            ]
           }
         }
       }
@@ -231,7 +267,29 @@
   },
   "schematics": {
     "@schematics/angular:component": {
-      "style": "scss"
+      "style": "scss",
+      "type": "component"
+    },
+    "@schematics/angular:directive": {
+      "type": "directive"
+    },
+    "@schematics/angular:service": {
+      "type": "service"
+    },
+    "@schematics/angular:guard": {
+      "typeSeparator": "."
+    },
+    "@schematics/angular:interceptor": {
+      "typeSeparator": "."
+    },
+    "@schematics/angular:module": {
+      "typeSeparator": "."
+    },
+    "@schematics/angular:pipe": {
+      "typeSeparator": "."
+    },
+    "@schematics/angular:resolver": {
+      "typeSeparator": "."
     }
   }
 }

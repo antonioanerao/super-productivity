@@ -1,28 +1,10 @@
-import { Observable, Subject, timer } from 'rxjs';
-import { filter, first, map, takeUntil, tap } from 'rxjs/operators';
+import { Observable, Subject } from 'rxjs';
+import { first, takeUntil, tap } from 'rxjs/operators';
 import { ShepherdService } from './shepherd.service';
-import Step from 'shepherd.js/src/types/step';
-import StepOptionsWhen = Step.StepOptionsWhen;
+import type Shepherd from 'shepherd.js';
+type StepOptionsWhen = Shepherd.Step.StepOptionsWhen;
 import { TourId } from './shepherd-steps.const';
-
-export const waitForEl = (selector: string, cb: () => void): number => {
-  const int = window.setInterval(() => {
-    console.log('INT');
-
-    if (document.querySelector(selector)) {
-      window.clearInterval(int);
-      cb();
-    }
-  }, 50);
-  return int;
-};
-
-export const waitForElObs$ = (selector: string): Observable<any> => {
-  return timer(50, 50).pipe(
-    map(() => document.querySelector(selector)),
-    filter((el) => !!el),
-  );
-};
+import { Log } from '../../core/log';
 
 export const nextOnObs = (
   obs: Observable<any>,
@@ -41,7 +23,8 @@ export const nextOnObs = (
         .pipe(
           tap((v) => {
             if (debugTitle) {
-              console.log('nextOnObs', v, debugTitle);
+              // eslint-disable-next-line local-rules/no-user-content-in-logs -- grandfathered log baseline (2026-09), not yet triaged
+              Log.log('nextOnObs', v, debugTitle);
             }
           }),
           first(),
@@ -75,24 +58,24 @@ export const twoWayObs = (
       onDestroy$ = new Subject();
       fwd.obs.pipe(first(), takeUntil(onDestroy$)).subscribe((v) => {
         if (debugTitle) {
-          console.log(debugTitle, 'fwd', v);
+          // eslint-disable-next-line local-rules/no-user-content-in-logs -- grandfathered log baseline (2026-09), not yet triaged
+          Log.log(debugTitle, 'fwd', v);
         }
         fwd.cbAfter?.();
         shepherdService.next();
       });
-      if (back) {
-        back.obs.pipe(first(), takeUntil(onDestroy$)).subscribe((v) => {
-          if (debugTitle) {
-            console.log(debugTitle, 'back', v);
-          }
-          back.cbAfter?.();
-          if (back.backToId) {
-            shepherdService.show(back.backToId);
-          } else {
-            shepherdService.back();
-          }
-        });
-      }
+      back.obs.pipe(first(), takeUntil(onDestroy$)).subscribe((v) => {
+        if (debugTitle) {
+          // eslint-disable-next-line local-rules/no-user-content-in-logs -- grandfathered log baseline (2026-09), not yet triaged
+          Log.log(debugTitle, 'back', v);
+        }
+        back.cbAfter?.();
+        if (back.backToId) {
+          shepherdService.show(back.backToId);
+        } else {
+          shepherdService.back();
+        }
+      });
     },
     hide: () => {
       onDestroy$.next();

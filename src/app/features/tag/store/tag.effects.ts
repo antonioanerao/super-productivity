@@ -1,267 +1,105 @@
-import { Injectable } from '@angular/core';
-import { Actions, createEffect, ofType } from '@ngrx/effects';
-import { concatMap, filter, first, map, switchMap, take, tap } from 'rxjs/operators';
-import { select, Store } from '@ngrx/store';
-import { selectTagFeatureState } from './tag.reducer';
-import { PersistenceService } from '../../../core/persistence/persistence.service';
+import { inject, Injectable } from '@angular/core';
+import { createEffect, ofType } from '@ngrx/effects';
+import { LOCAL_ACTIONS } from '../../../util/local-actions.token';
+import {
+  distinctUntilChanged,
+  filter,
+  first,
+  map,
+  switchMap,
+  take,
+  tap,
+} from 'rxjs/operators';
+import { Store } from '@ngrx/store';
+import {
+  selectTodayTagRepair,
+  selectTodayTaskIds,
+} from '../../work-context/store/work-context.selectors';
 import { T } from '../../../t.const';
 import { SnackService } from '../../../core/snack/snack.service';
-import {
-  addTag,
-  addToBreakTimeForTag,
-  deleteTag,
-  deleteTags,
-  updateAdvancedConfigForTag,
-  updateTag,
-  updateTagOrder,
-  updateWorkEndForTag,
-  updateWorkStartForTag,
-  upsertTag,
-} from './tag.actions';
-import {
-  addTask,
-  addTimeSpent,
-  convertToMainTask,
-  deleteTask,
-  deleteTasks,
-  moveToArchive_,
-  removeTagsForAllTasks,
-  restoreTask,
-  updateTaskTags,
-} from '../../tasks/store/task.actions';
+import { deleteTag, deleteTags, updateTag } from './tag.actions';
 import { TagService } from '../tag.service';
-import { TaskService } from '../../tasks/task.service';
 import { EMPTY, Observable, of } from 'rxjs';
-import { Task, TaskArchive } from '../../tasks/task.model';
-import { Tag } from '../tag.model';
 import { WorkContextType } from '../../work-context/work-context.model';
 import { WorkContextService } from '../../work-context/work-context.service';
 import { Router } from '@angular/router';
 import { TODAY_TAG } from '../tag.const';
-import { createEmptyEntity } from '../../../util/create-empty-entity';
-import {
-  moveTaskDownInTodayList,
-  moveTaskInTodayList,
-  moveTaskUpInTodayList,
-} from '../../work-context/store/work-context-meta.actions';
-import { TaskRepeatCfgService } from '../../task-repeat-cfg/task-repeat-cfg.service';
-import { DateService } from 'src/app/core/date/date.service';
+import { fastArrayCompare } from '../../../util/fast-array-compare';
+import { getDbDateStr } from '../../../util/get-db-date-str';
+import { TranslateService } from '@ngx-translate/core';
+import { PlannerService } from '../../planner/planner.service';
+import { selectAllTasksDueToday } from '../../planner/store/planner.selectors';
+import { TaskSharedActions } from '../../../root-store/meta/task-shared.actions';
+import { Log } from '../../../core/log';
+import { skipDuringSyncWindow } from '../../../util/skip-during-sync-window.operator';
+import { skipWhileApplyingRemoteOps } from '../../../util/skip-during-sync.operator';
+import { alertDialog, confirmDialog } from '../../../util/native-dialogs';
 
 @Injectable()
 export class TagEffects {
-  saveToLs$: Observable<unknown> = this._store$.pipe(
-    select(selectTagFeatureState),
-    take(1),
-    switchMap((tagState) =>
-      this._persistenceService.tag.saveState(tagState, { isSyncModelChange: true }),
-    ),
-  );
-  updateTagsStorage$: Observable<unknown> = createEffect(
-    () =>
-      this._actions$.pipe(
-        ofType(
-          addTag,
-          updateTag,
-          upsertTag,
-          deleteTag,
-          deleteTags,
+  private _actions$ = inject(LOCAL_ACTIONS);
+  private _store$ = inject(Store);
+  private _snackService = inject(SnackService);
+  private _tagService = inject(TagService);
+  private _workContextService = inject(WorkContextService);
+  private _router = inject(Router);
+  private _translateService = inject(TranslateService);
+  private _plannerService = inject(PlannerService);
 
-          updateTagOrder,
-
-          updateAdvancedConfigForTag,
-          updateWorkStartForTag,
-          updateWorkEndForTag,
-          addToBreakTimeForTag,
-
-          // TASK Actions
-          deleteTasks,
-          updateTaskTags,
-        ),
-        switchMap(() => this.saveToLs$),
-      ),
-    { dispatch: false },
-  );
-  updateProjectStorageConditionalTask$: Observable<unknown> = createEffect(
-    () =>
-      this._actions$.pipe(
-        ofType(addTask, convertToMainTask, deleteTask, restoreTask, moveToArchive_),
-        switchMap((a) => {
-          let isChange = false;
-          switch (a.type) {
-            case addTask.type:
-              isChange = !!a.task.tagIds.length;
-              break;
-            case deleteTask.type:
-              isChange = !!a.task.tagIds.length;
-              break;
-            case moveToArchive_.type:
-              isChange = !!a.tasks.find((task) => task.tagIds.length);
-              break;
-            case restoreTask.type:
-              isChange = !!a.task.tagIds.length;
-              break;
-            case convertToMainTask.type:
-              isChange = !!a.parentTagIds.length;
-              break;
-          }
-          return isChange ? of(a) : EMPTY;
-        }),
-        switchMap(() => this.saveToLs$),
-      ),
-    { dispatch: false },
-  );
-  updateTagsStorageConditional$: Observable<unknown> = createEffect(
-    () =>
-      this._actions$.pipe(
-        ofType(moveTaskInTodayList, moveTaskUpInTodayList, moveTaskDownInTodayList),
-        filter((p) => p.workContextType === WorkContextType.TAG),
-        switchMap(() => this.saveToLs$),
-      ),
-    { dispatch: false },
-  );
-
-  snackUpdateBaseSettings$: any = createEffect(
+  snackUpdateBaseSettings$ = createEffect(
     () =>
       this._actions$.pipe(
         ofType(updateTag),
-        tap(() =>
-          this._snackService.open({
-            type: 'SUCCESS',
-            msg: T.F.TAG.S.UPDATED,
-          }),
+        tap(
+          (action) =>
+            !action.isSkipSnack &&
+            this._snackService.open({
+              type: 'SUCCESS',
+              msg: T.F.TAG.S.UPDATED,
+            }),
         ),
       ),
     { dispatch: false },
   );
 
-  updateWorkStart$: any = createEffect(() =>
-    this._actions$.pipe(
-      ofType(addTimeSpent),
-      concatMap(({ task }) =>
-        task.parentId
-          ? this._taskService.getByIdOnce$(task.parentId).pipe(first())
-          : of(task),
-      ),
-      filter((task: Task) => task.tagIds && !!task.tagIds.length),
-      concatMap((task: Task) =>
-        this._tagService.getTagsByIds$(task.tagIds).pipe(first()),
-      ),
-      concatMap((tags: Tag[]) =>
-        tags
-          // only if not assigned for day already
-          .filter((tag) => !tag.workStart[this._dateService.todayStr()])
-          .map((tag) =>
-            updateWorkStartForTag({
-              id: tag.id,
-              date: this._dateService.todayStr(),
-              newVal: Date.now(),
-            }),
-          ),
-      ),
-    ),
-  );
-
-  updateWorkEnd$: Observable<unknown> = createEffect(() =>
-    this._actions$.pipe(
-      ofType(addTimeSpent),
-      concatMap(({ task }) =>
-        task.parentId
-          ? this._taskService.getByIdOnce$(task.parentId).pipe(first())
-          : of(task),
-      ),
-      filter((task: Task) => task.tagIds && !!task.tagIds.length),
-      concatMap((task: Task) =>
-        this._tagService.getTagsByIds$(task.tagIds).pipe(first()),
-      ),
-      concatMap((tags: Tag[]) =>
-        tags.map((tag) =>
-          updateWorkEndForTag({
-            id: tag.id,
-            date: this._dateService.todayStr(),
-            newVal: Date.now(),
-          }),
-        ),
-      ),
-    ),
-  );
-
-  deleteTagRelatedData: Observable<unknown> = createEffect(
+  snackPlanForToday$ = createEffect(
     () =>
       this._actions$.pipe(
-        ofType(deleteTag, deleteTags),
-        map((a: any) => (a.ids ? a.ids : [a.id])),
-        tap(async (tagIdsToRemove: string[]) => {
-          // remove from all tasks
-          this._taskService.removeTagsForAllTask(tagIdsToRemove);
-          // remove from archive
-          await this._persistenceService.taskArchive.execAction(
-            removeTagsForAllTasks({ tagIdsToRemove }),
-          );
-
-          const isOrphanedParentTask = (t: Task): boolean =>
-            !t.projectId && !t.tagIds.length && !t.parentId;
-
-          // remove orphaned
-          const tasks = await this._taskService.allTasks$.pipe(first()).toPromise();
-          const taskIdsToRemove: string[] = tasks
-            .filter(isOrphanedParentTask)
-            .map((t) => t.id);
-          this._taskService.removeMultipleTasks(taskIdsToRemove);
-
-          // remove orphaned for archive
-          const taskArchiveState: TaskArchive =
-            (await this._persistenceService.taskArchive.loadState()) ||
-            createEmptyEntity();
-
-          let archiveSubTaskIdsToDelete: string[] = [];
-          const archiveMainTaskIdsToDelete: string[] = [];
-          (taskArchiveState.ids as string[]).forEach((id) => {
-            const t = taskArchiveState.entities[id] as Task;
-            if (isOrphanedParentTask(t)) {
-              archiveMainTaskIdsToDelete.push(id);
-              archiveSubTaskIdsToDelete = archiveSubTaskIdsToDelete.concat(t.subTaskIds);
-            }
-          });
-
-          await this._persistenceService.taskArchive.execAction(
-            deleteTasks({
-              taskIds: [...archiveMainTaskIdsToDelete, ...archiveSubTaskIdsToDelete],
-            }),
-          );
-
-          // remove from task repeat
-          const taskRepeatCfgs = await this._taskRepeatCfgService.taskRepeatCfgs$
-            .pipe(take(1))
-            .toPromise();
-          taskRepeatCfgs.forEach((taskRepeatCfg) => {
-            if (taskRepeatCfg.tagIds.some((r) => tagIdsToRemove.indexOf(r) >= 0)) {
-              const tagIds = taskRepeatCfg.tagIds.filter(
-                (tagId) => !tagIdsToRemove.includes(tagId),
-              );
-              if (tagIds.length === 0 && !taskRepeatCfg.projectId) {
-                this._taskRepeatCfgService.deleteTaskRepeatCfg(
-                  taskRepeatCfg.id as string,
-                );
-              } else {
-                this._taskRepeatCfgService.updateTaskRepeatCfg(
-                  taskRepeatCfg.id as string,
-                  {
-                    tagIds,
-                  },
-                );
-              }
-            }
+        ofType(TaskSharedActions.planTasksForToday),
+        filter(({ isShowSnack }) => !!isShowSnack),
+        tap(async ({ taskIds }) => {
+          // if (taskIds.length === 1) {
+          //   const task = await this._taskService.getByIdOnce$(taskIds[0]).toPromise();
+          // }
+          const formattedDate = this._translateService.instant(T.G.TODAY_TAG_TITLE);
+          this._snackService.open({
+            type: 'SUCCESS',
+            msg: T.F.PLANNER.S.TASK_PLANNED_FOR,
+            ico: 'today',
+            translateParams: {
+              date: formattedDate,
+              extra: await this._plannerService.getSnackExtraStr(getDbDateStr()),
+            },
           });
         }),
       ),
     { dispatch: false },
   );
 
+  /**
+   * Redirects to Today tag if the current tag is deleted.
+   *
+   * NOTE: Archive cleanup (removing tags from archived tasks, cleaning up time tracking)
+   * is now handled by ArchiveOperationHandler, which is the single source of truth for
+   * archive operations.
+   *
+   * @see ArchiveOperationHandler._handleDeleteTags
+   */
   redirectIfCurrentTagIsDeleted: Observable<unknown> = createEffect(
     () =>
       this._actions$.pipe(
         ofType(deleteTag, deleteTags),
-        map((a: any) => (a.ids ? a.ids : [a.id])),
+        map((a) => ('ids' in a ? a.ids : [a.id])),
         tap(async (tagIdsToRemove: string[]) => {
           if (
             tagIdsToRemove.includes(
@@ -275,12 +113,18 @@ export class TagEffects {
     { dispatch: false },
   );
 
-  cleanupNullTasksForTaskList: Observable<unknown> = createEffect(
+  /**
+   * SAFETY: Guarded with skipWhileApplyingRemoteOps() because this effect
+   * dispatches via tagService.updateTag() inside tap(), bypassing dispatch:false.
+   * Without the guard, intermediate sync states could trigger false null-task detection.
+   */
+  cleanupNullTasksForTaskList$: Observable<unknown> = createEffect(
     () =>
       this._workContextService.activeWorkContextTypeAndId$.pipe(
+        skipWhileApplyingRemoteOps(),
         filter(({ activeType }) => activeType === WorkContextType.TAG),
         switchMap(({ activeType, activeId }) =>
-          this._workContextService.todaysTasks$.pipe(
+          this._workContextService.mainListTasks$.pipe(
             take(1),
             map((tasks) => ({
               allTasks: tasks,
@@ -291,33 +135,144 @@ export class TagEffects {
           ),
         ),
         filter(({ nullTasks }) => nullTasks.length > 0),
-        tap((arg) => console.log('Error INFO Today:', arg)),
+        tap(({ allTasks, activeId }) =>
+          Log.log('Error INFO Today:', {
+            activeId,
+            taskCount: allTasks.length,
+            // Positions, not ids: a bug report needs to show WHICH entries the
+            // dialog is about to delete, and `exportLogHistory` caps each arg at
+            // 400 chars — an id list truncates at ~15 tasks, losing the tail
+            // where the corrupt entries accumulate.
+            nullIndices: allTasks.flatMap((t, i) => (t ? [] : [i])),
+          }),
+        ),
         tap(({ activeId, allTasks }) => {
           const allIds = allTasks.map((t) => t && t.id);
-          const r = confirm(
+          const r = confirmDialog(
             'Nooo! We found some tasks with no data. It is strongly recommended to delete them to avoid further data corruption. Delete them now?',
           );
           if (r) {
             this._tagService.updateTag(activeId, {
               taskIds: allIds.filter((id) => !!id),
             });
-            alert('Done!');
+            alertDialog('Done!');
           }
         }),
       ),
     { dispatch: false },
   );
 
-  constructor(
-    private _actions$: Actions,
-    private _store$: Store<any>,
-    private _persistenceService: PersistenceService,
-    private _snackService: SnackService,
-    private _tagService: TagService,
-    private _workContextService: WorkContextService,
-    private _taskService: TaskService,
-    private _taskRepeatCfgService: TaskRepeatCfgService,
-    private _router: Router,
-    private _dateService: DateService,
-  ) {}
+  /**
+   * Maintains TODAY_TAG.taskIds consistency by:
+   * 1. Removing subtasks whose parents are also in the list (parent takes precedence)
+   * 2. Adding tasks with dueDay=today that aren't in the list yet
+   *
+   * SAFETY: This is a selector-based effect that dispatches actions.
+   * Protected against sync replay by:
+   * - skipDuringSyncWindow() - skips during both op application AND post-sync cooldown
+   * - distinctUntilChanged - prevents duplicate dispatches for same state
+   * - explicit isChanged check before dispatch
+   *
+   * Note: Converting to a meta-reducer was considered but rejected because:
+   * - The logic needs access to multiple selectors (todayTaskIds, allTasksDueToday)
+   * - The current guards provide sufficient protection
+   * - This is a "cleanup" effect that corrects inconsistencies, not a primary data flow
+   */
+  preventParentAndSubTaskInTodayList$ = createEffect(() =>
+    this._store$.select(selectTodayTaskIds).pipe(
+      filter((v) => v.length > 0),
+      skipDuringSyncWindow(),
+      distinctUntilChanged(fastArrayCompare),
+      // NOTE: wait a bit for potential effects to be executed
+      switchMap((todayTaskIds) =>
+        this._store$.select(selectAllTasksDueToday).pipe(
+          first(),
+          map((allTasksDueToday) => ({ allTasksDueToday, todayTaskIds })),
+        ),
+      ),
+      switchMap(({ allTasksDueToday, todayTaskIds }) => {
+        const tasksWithParentInListIds = allTasksDueToday
+          .filter((t) => t.parentId && todayTaskIds.includes(t.parentId))
+          .map((t) => t.id);
+
+        const dueNotInListIds = allTasksDueToday
+          .filter((t) => !todayTaskIds.includes(t.id))
+          .map((t) => t.id);
+
+        const newTaskIds = [...todayTaskIds, ...dueNotInListIds].filter(
+          (id) => !tasksWithParentInListIds.includes(id),
+        );
+
+        // Only dispatch if the taskIds actually change
+        const isChanged =
+          newTaskIds.length !== todayTaskIds.length ||
+          newTaskIds.some((id, i) => id !== todayTaskIds[i]);
+
+        if (isChanged && (tasksWithParentInListIds.length || dueNotInListIds.length)) {
+          Log.log('Preventing parent and subtask in today list', {
+            isChanged,
+            tasksWithParentInListIds,
+            dueNotInListIds,
+            todayTaskIds,
+            newTaskIds,
+          });
+
+          return of(
+            updateTag({
+              tag: {
+                id: TODAY_TAG.id,
+                changes: {
+                  taskIds: newTaskIds,
+                },
+              },
+              isSkipSnack: true,
+            }),
+          );
+        }
+
+        return EMPTY;
+      }),
+    ),
+  );
+
+  /**
+   * Repairs TODAY_TAG.taskIds when it becomes inconsistent with tasks' dueDay values.
+   *
+   * This handles state divergence caused by per-entity conflict resolution during sync.
+   * When "Add to today" and "Snooze" operations conflict, the TASK entity may resolve
+   * to one client's values while TODAY_TAG entity gets different values.
+   *
+   * SAFETY: Protected by skipDuringSyncWindow() - won't fire during sync replay
+   * or post-sync cooldown period.
+   *
+   * @see selectTodayTagRepair - detects inconsistencies between TODAY_TAG.taskIds and task.dueDay
+   * @see ARCHITECTURE-DECISIONS.md Decision #2
+   */
+  repairTodayTagConsistency$: Observable<unknown> = createEffect(() =>
+    this._store$.select(selectTodayTagRepair).pipe(
+      skipDuringSyncWindow(),
+      filter(
+        (repair): repair is { needsRepair: boolean; repairedTaskIds: string[] } =>
+          repair !== null && repair.needsRepair,
+      ),
+      tap((repair) => {
+        Log.log('Repairing TODAY_TAG consistency', {
+          repairedTaskIds: repair.repairedTaskIds,
+        });
+      }),
+      map((repair) =>
+        updateTag({
+          tag: {
+            id: TODAY_TAG.id,
+            changes: {
+              taskIds: repair.repairedTaskIds,
+            },
+          },
+          isSkipSnack: true,
+        }),
+      ),
+    ),
+  );
+  // PREVENT LAST TAG DELETION ACTIONS
+  // ---------------------------------------------
 }

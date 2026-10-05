@@ -1,30 +1,48 @@
 import {
-  Attribute,
   ChangeDetectionStrategy,
   Component,
   ElementRef,
-  EventEmitter,
   Input,
-  OnDestroy,
-  Output,
-  ViewChild,
+  input,
+  output,
+  viewChild,
 } from '@angular/core';
-import { UntypedFormControl } from '@angular/forms';
+import { FormsModule, ReactiveFormsModule, UntypedFormControl } from '@angular/forms';
 import { Observable } from 'rxjs';
 import {
   MatAutocomplete,
   MatAutocompleteSelectedEvent,
+  MatAutocompleteTrigger,
 } from '@angular/material/autocomplete';
-import { MatChipInputEvent } from '@angular/material/chips';
+import {
+  MatChipGrid,
+  MatChipInput,
+  MatChipInputEvent,
+  MatChipRemove,
+  MatChipRow,
+} from '@angular/material/chips';
 import { map, startWith } from 'rxjs/operators';
 import { COMMA, ENTER } from '@angular/cdk/keycodes';
 import { T } from '../../t.const';
+import { MatFormField, MatLabel } from '@angular/material/form-field';
+import { MatIcon } from '@angular/material/icon';
+import { MatTooltip } from '@angular/material/tooltip';
+import { MatOption } from '@angular/material/core';
+import { TranslatePipe } from '@ngx-translate/core';
+import { AsyncPipe } from '@angular/common';
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports -- grandfathered layer-boundary debt
+import { TagComponent } from '../../features/tag/tag/tag.component';
+import { sortByTitle } from '../../util/sort-by-title';
+import { ChipAutocompleteKeysDirective } from '../chip-autocomplete-keys/chip-autocomplete-keys.directive';
 
+const DEFAULT_SEPARATOR_KEY_CODES: number[] = [ENTER, COMMA];
+
+// Items render via <tag>, so non-tag callers get a colorless circle + title (graceful degradation).
 interface Suggestion {
   id: string;
   title: string;
 
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 @Component({
@@ -32,29 +50,41 @@ interface Suggestion {
   templateUrl: './chip-list-input.component.html',
   styleUrls: ['./chip-list-input.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [
+    MatFormField,
+    MatLabel,
+    MatChipGrid,
+    MatChipRow,
+    MatIcon,
+    MatChipRemove,
+    MatTooltip,
+    FormsModule,
+    MatAutocompleteTrigger,
+    MatChipInput,
+    ReactiveFormsModule,
+    MatAutocomplete,
+    MatOption,
+    TranslatePipe,
+    AsyncPipe,
+    TagComponent,
+    ChipAutocompleteKeysDirective,
+  ],
 })
-export class ChipListInputComponent implements OnDestroy {
+export class ChipListInputComponent {
   T: typeof T = T;
 
-  @Input() label?: string;
-  @Input() additionalActionIcon?: string;
-  @Input() additionalActionTooltip?: string;
-  @Input() additionalActionTooltipUnToggle?: string;
-  @Input() toggledItems?: string[];
+  readonly label = input<string>();
 
-  @Output() addItem: EventEmitter<string> = new EventEmitter<string>();
-  @Output() addNewItem: EventEmitter<string> = new EventEmitter<string>();
-  @Output() removeItem: EventEmitter<string> = new EventEmitter<string>();
-  @Output() additionalAction: EventEmitter<string> = new EventEmitter<string>();
-  @Output() ctrlEnterSubmit: EventEmitter<void> = new EventEmitter<void>();
+  readonly addItem = output<string>();
+  readonly addNewItem = output<string>();
+  readonly removeItem = output<string>();
 
   suggestionsIn: Suggestion[] = [];
   modelItems: Suggestion[] = [];
   inputCtrl: UntypedFormControl = new UntypedFormControl();
-  separatorKeysCodes: number[] = [ENTER, COMMA];
-  isAutoFocus = false;
-  @ViewChild('inputElRef', { static: true }) inputEl?: ElementRef<HTMLInputElement>;
-  @ViewChild('autoElRef', { static: true }) matAutocomplete?: MatAutocomplete;
+  separatorKeysCodes: number[] = DEFAULT_SEPARATOR_KEY_CODES;
+  readonly inputEl = viewChild<ElementRef<HTMLInputElement>>('inputElRef');
+  readonly matAutocomplete = viewChild<MatAutocomplete>('autoElRef');
   private _modelIds: string[] = [];
 
   filteredSuggestions: Observable<Suggestion[]> = this.inputCtrl.valueChanges.pipe(
@@ -68,41 +98,29 @@ export class ChipListInputComponent implements OnDestroy {
     ),
   );
 
-  private _autoFocusTimeout?: number;
-
-  constructor(@Attribute('autoFocus') public autoFocus: Attribute) {
-    if (typeof autoFocus === 'string') {
-      this.isAutoFocus = true;
-      this._autoFocusTimeout = window.setTimeout(() => {
-        this.inputEl?.nativeElement.focus();
-        // NOTE: we need to wait a little for the tag dialog to be there
-      }, 300);
-    }
-  }
-
-  ngOnDestroy(): void {
-    if (this._autoFocusTimeout) {
-      window.clearTimeout(this._autoFocusTimeout);
-    }
-  }
-
+  // TODO: Skipped for migration because:
+  //  Accessor inputs cannot be migrated as they are too complex.
   @Input() set suggestions(val: Suggestion[]) {
-    this.suggestionsIn = val.sort((a, b) => a.title.localeCompare(b.title));
+    // copy first: consumers pass memoized NgRx selector output, sort() mutates in place
+    this.suggestionsIn = sortByTitle(val);
     this._updateModelItems(this._modelIds);
   }
 
+  // TODO: Skipped for migration because:
+  //  Accessor inputs cannot be migrated as they are too complex.
   @Input() set model(v: string[]) {
     this._modelIds = v;
     this._updateModelItems(v);
   }
 
   add(event: MatChipInputEvent): void {
-    if (!this.matAutocomplete) {
+    const matAutocomplete = this.matAutocomplete();
+    if (!matAutocomplete) {
       throw new Error('Auto complete undefined');
     }
 
-    if (!this.matAutocomplete.isOpen) {
-      const input = event.input;
+    if (!matAutocomplete.isOpen) {
+      const inp = event.input;
       const value = event.value;
 
       // Add our fruit
@@ -110,7 +128,7 @@ export class ChipListInputComponent implements OnDestroy {
         this._addByTitle(value.trim());
       }
 
-      input.value = '';
+      inp.value = '';
 
       this.inputCtrl.setValue(null);
     }
@@ -122,31 +140,39 @@ export class ChipListInputComponent implements OnDestroy {
 
   selected(event: MatAutocompleteSelectedEvent): void {
     this._add(event.option.value);
-    if (this.inputEl) {
-      this.inputEl.nativeElement.value = '';
+    this._clearInput();
+  }
+
+  onInputKeydown(ev: KeyboardEvent): void {
+    const isCyrillic = /^[А-яёЁ]$/.test(ev.key);
+    if (isCyrillic) {
+      this.separatorKeysCodes = [ENTER];
+    } else {
+      this.separatorKeysCodes = DEFAULT_SEPARATOR_KEY_CODES;
+    }
+  }
+
+  acceptSuggestion(id: string): void {
+    this._add(id);
+  }
+
+  commitText(text: string): void {
+    this._addByTitle(text);
+  }
+
+  private _clearInput(): void {
+    const inputEl = this.inputEl();
+    if (inputEl) {
+      inputEl.nativeElement.value = '';
     }
     this.inputCtrl.setValue(null);
   }
 
-  trackById(i: number, item: Suggestion): string {
-    return item.id;
-  }
-
-  isToggled(id: string): boolean {
-    return !!this.toggledItems && this.toggledItems.includes(id);
-  }
-
-  triggerCtrlEnterSubmit(ev: KeyboardEvent): void {
-    if (ev.code === 'Enter' && ev.ctrlKey) {
-      this.ctrlEnterSubmit.next();
-    }
-  }
-
   private _updateModelItems(modelIds: string[]): void {
     this.modelItems = this.suggestionsIn.length
-      ? (modelIds.map((id) =>
-          this.suggestionsIn.find((suggestion) => suggestion.id === id),
-        ) as Suggestion[])
+      ? (modelIds
+          .map((id) => this.suggestionsIn.find((suggestion) => suggestion.id === id))
+          .filter((v) => v) as Suggestion[])
       : [];
   }
 

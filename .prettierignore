@@ -2,3 +2,8 @@ app-build
 node_modules
 .idea
 .vscode
+*.env
+*.env.example
+.prettierignore
+packages/super-sync-server/public/simplewebauthn-browser.min.js
+packages/super-sync-server/helm

@@ -1,7 +1,7 @@
 import { MatSnackBarConfig } from '@angular/material/snack-bar';
 import { Observable } from 'rxjs';
 
-export type SnackType = 'ERROR' | 'SUCCESS' | 'CUSTOM' | 'JIRA_UNBLOCK';
+export type SnackType = 'ERROR' | 'SUCCESS' | 'WARNING' | 'CUSTOM' | 'JIRA_UNBLOCK';
 
 export interface SnackParams {
   msg: string;
@@ -14,6 +14,7 @@ export interface SnackParams {
   actionId?: string;
   // eslint-disable-next-line
   actionFn?: Function;
+  dismissFn?: () => void | Promise<void>;
   actionPayload?: unknown;
   config?: MatSnackBarConfig;
   isSpinner?: boolean;

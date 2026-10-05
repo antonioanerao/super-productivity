@@ -1,44 +1,45 @@
 <div class="dialog-help-wrapper">
-  <h1 mat-dialog-title>{{T.F.TASK.D_TIME_FOR_DAY.TITLE|translate}}</h1>
+  <h1 mat-dialog-title>{{ T.F.TASK.D_TIME_FOR_DAY.TITLE | translate }}</h1>
 
   <form
-    (submit)="submit()"
+    (submit)="$event.preventDefault(); submit()"
     name="addForAnotherDayForm"
   >
     <mat-dialog-content>
       <help-section>
         <div
-          [innerHTML]="T.F.TASK.D_TIME_FOR_DAY.HELP|translate"
+          [innerHTML]="T.F.TASK.D_TIME_FOR_DAY.HELP | translate"
           class="side-info"
         ></div>
       </help-section>
 
       <h3 class="mat-caption">
-        {{T.F.TASK.D_TIME_FOR_DAY.ADD_ENTRY_FOR|translate:{ date:
-        (newEntry.date|date:'dd-MM-yyyy') || '' } }}
+        {{
+          T.F.TASK.D_TIME_FOR_DAY.ADD_ENTRY_FOR
+            | translate
+              : {
+                  date: newEntry.date
+                    ? (newEntry.date
+                      | localeDate
+                        : dateTimeFormatService.dateFormat().raw
+                        : undefined
+                        : locale())
+                    : dateTimeFormatService.dateFormat().humanReadable,
+                }
+        }}
       </h3>
-      <mat-form-field>
-        <mat-label>{{T.F.TASK.D_TIME_FOR_DAY.DATE|translate}}</mat-label>
-        <input
-          [(ngModel)]="newEntry.date"
-          [matDatepicker]="myDatepicker"
-          matInput
-          name="date"
-          required
-          type="text"
-        />
-        <mat-error>{{T.V.E_DATETIME|translate}}</mat-error>
-        <mat-datepicker-toggle
-          [for]="myDatepicker"
-          matPrefix
-        ></mat-datepicker-toggle>
-        <mat-datepicker #myDatepicker></mat-datepicker>
-      </mat-form-field>
+
+      <date-picker-input
+        [(ngModel)]="newEntry.date"
+        [ngModelOptions]="{ standalone: true }"
+        [label]="T.F.TASK.D_TIME_FOR_DAY.DATE | translate"
+        [required]="true"
+      />
 
       <div class="wrap-time">
         <input-duration-slider
           [(model)]="newEntry.timeSpent"
-          [label]="T.F.TASK.D_TIME_FOR_DAY.TINE_SPENT|translate"
+          [label]="T.F.TASK.D_TIME_FOR_DAY.TINE_SPENT | translate"
         >
         </input-duration-slider>
       </div>
@@ -47,20 +48,20 @@
     <mat-dialog-actions align="end">
       <button
         [mat-dialog-close]="true"
-        color="primary"
         mat-button
         type="button"
       >
-        {{T.G.CANCEL|translate}}
+        {{ T.G.CANCEL | translate }}
       </button>
 
       <button
         color="primary"
-        mat-stroked-button
+        mat-flat-button
         type="submit"
+        [disabled]="!newEntry.timeSpent || !newEntry.date"
       >
         <mat-icon>save</mat-icon>
-        {{T.G.SAVE|translate}}
+        {{ T.G.SAVE | translate }}
       </button>
     </mat-dialog-actions>
   </form>

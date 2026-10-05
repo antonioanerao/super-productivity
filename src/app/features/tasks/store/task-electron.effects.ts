@@ -1,57 +1,200 @@
-import { Injectable } from '@angular/core';
-import { Actions, createEffect, ofType } from '@ngrx/effects';
-import { addTimeSpent, setCurrentTask, unsetCurrentTask } from './task.actions';
+import { inject, Injectable } from '@angular/core';
+import { createEffect, ofType } from '@ngrx/effects';
+import { setCurrentTask, unsetCurrentTask } from './task.actions';
 import { select, Store } from '@ngrx/store';
-import { filter, tap, withLatestFrom } from 'rxjs/operators';
-import { selectCurrentTask } from './task.selectors';
-import { Observable } from 'rxjs';
-import { IS_ELECTRON } from '../../../app.constants';
+import {
+  filter,
+  startWith,
+  take,
+  tap,
+  throttleTime,
+  withLatestFrom,
+} from 'rxjs/operators';
+import { selectCurrentTask, selectTaskEntities } from './task.selectors';
+import { selectTodayTaskIds } from '../../work-context/store/work-context.selectors';
 import { GlobalConfigService } from '../../config/global-config.service';
+import {
+  selectIsOsProgressBarOwnedBySession,
+  selectIsOverlayShown,
+} from '../../focus-mode/store/focus-mode.selectors';
+import { TimeTrackingActions } from '../../time-tracking/store/time-tracking.actions';
+import { FocusModeService } from '../../focus-mode/focus-mode.service';
+import {
+  cancelFocusSession,
+  completeFocusSession,
+  hideFocusOverlay,
+  pauseFocusSession,
+  showFocusOverlay,
+  startFocusSession,
+  tick,
+  unPauseFocusSession,
+} from '../../focus-mode/store/focus-mode.actions';
+import { IPC } from '../../../../../electron/shared-with-frontend/ipc-events.const';
+import { TaskService } from '../task.service';
+import { TaskSharedActions } from '../../../root-store/meta/task-shared.actions';
+import { LOCAL_ACTIONS } from '../../../util/local-actions.token';
 
 // TODO send message to electron when current task changes here
 
 @Injectable()
 export class TaskElectronEffects {
-  taskChangeElectron$: any = createEffect(
+  private _actions$ = inject(LOCAL_ACTIONS);
+  private _store$ = inject<Store<any>>(Store);
+  private _configService = inject(GlobalConfigService);
+  private _focusModeService = inject(FocusModeService);
+  private _taskService = inject(TaskService);
+
+  // -----------------------------------------------------------------------------------
+  // NOTE: IS_ELECTRON checks not necessary, since we check before importing this module
+  // -----------------------------------------------------------------------------------
+
+  constructor() {
+    /**
+     * SYNC-SAFE: This IPC listener is safe during sync/hydration because:
+     * - Read-only operation - only reads current state and sends to Electron
+     * - No store mutations or action dispatches
+     * - Responds to explicit IPC request, not store-change driven
+     * - take(1) ensures single response per request
+     */
+    window.ea.on(IPC.REQUEST_CURRENT_TASK_FOR_TASK_WIDGET, () => {
+      this._store$
+        .pipe(
+          select(selectCurrentTask),
+          withLatestFrom(
+            this._store$.pipe(select(selectIsOverlayShown)),
+            this._focusModeService.currentSessionTime$,
+          ),
+          // Only take the first value and complete
+          take(1),
+        )
+        .subscribe(([current, isFocusModeEnabled, currentFocusSessionTime]) => {
+          window.ea.updateCurrentTask(
+            current,
+            false, // isPomodoroEnabled - legacy, always false
+            0, // currentPomodoroSessionTime - legacy, always 0
+            isFocusModeEnabled,
+            currentFocusSessionTime,
+            this._focusModeService.mode(),
+          );
+        });
+    });
+
+    window.ea.onSwitchTask((taskId) => {
+      this._taskService.setCurrentId(taskId);
+    });
+  }
+
+  syncTodayTasksToElectron$ = createEffect(
+    () =>
+      this._store$.pipe(
+        select(selectTodayTaskIds),
+        withLatestFrom(this._store$.pipe(select(selectTaskEntities))),
+        tap(([todayTaskIds, taskEntities]) => {
+          const tasks = todayTaskIds
+            .map((id) => taskEntities[id])
+            .filter((t) => !!t && !t.isDone)
+            .map((t) => ({
+              id: t!.id,
+              title: t!.title,
+              timeEstimate: t!.timeEstimate,
+              timeSpent: t!.timeSpent,
+            }));
+          window.ea.updateTodayTasks(tasks);
+        }),
+      ),
+    { dispatch: false },
+  );
+
+  taskChangeElectron$ = createEffect(
     () =>
       this._actions$.pipe(
-        ofType(setCurrentTask, unsetCurrentTask, addTimeSpent),
-        withLatestFrom(this._store$.pipe(select(selectCurrentTask))),
-        tap(([action, current]) => {
-          if (IS_ELECTRON) {
-            window.ea.updateCurrentTask(current);
+        ofType(
+          setCurrentTask,
+          unsetCurrentTask,
+          TimeTrackingActions.addTimeSpent,
+          showFocusOverlay,
+          hideFocusOverlay,
+          startFocusSession,
+          cancelFocusSession,
+          pauseFocusSession,
+          unPauseFocusSession,
+          completeFocusSession,
+          // Keep tray time in sync during focus-mode breaks and focus sessions
+          // without an active task (addTimeSpent is gated on currentTask.id).
+          tick,
+        ),
+        // addTimeSpent and tick both fire every 1s during an active-task focus
+        // session (same shared globalInterval source), so collapse them into a
+        // single IPC/sec. Leading+trailing preserves immediate feedback for the
+        // non-tick actions (setCurrentTask, startFocusSession, ...).
+        throttleTime(500, undefined, { leading: true, trailing: true }),
+        withLatestFrom(
+          this._store$.pipe(select(selectCurrentTask)),
+          this._store$.pipe(select(selectIsOverlayShown)),
+          this._focusModeService.currentSessionTime$.pipe(startWith(0)),
+        ),
+        tap(([action, current, isFocusModeEnabled, currentFocusSessionTime]) => {
+          window.ea.updateCurrentTask(
+            current,
+            false, // isPomodoroEnabled - legacy, always false
+            0, // currentPomodoroSessionTime - legacy, always 0
+            isFocusModeEnabled,
+            currentFocusSessionTime,
+            this._focusModeService.mode(),
+          );
+        }),
+      ),
+    { dispatch: false },
+  );
+
+  setTaskBarNoProgress$ = createEffect(
+    () =>
+      this._actions$.pipe(
+        ofType(setCurrentTask),
+        tap(({ id }) => {
+          if (!id) {
+            window.ea.setProgressBar({
+              progress: -1,
+              progressBarMode: 'none',
+            });
           }
         }),
       ),
     { dispatch: false },
   );
 
-  setTaskBarNoProgress$ =
-    IS_ELECTRON &&
-    createEffect(
-      () =>
-        this._actions$.pipe(
-          ofType(setCurrentTask),
-          tap(({ id }) => {
-            if (!id) {
-              window.ea.setProgressBar({
-                progress: 0,
-                progressBarMode: 'pause',
-              });
-            }
-          }),
-        ),
-      { dispatch: false },
-    );
-
-  setTaskBarProgress$: Observable<any> = createEffect(
+  clearTaskBarOnTaskDone$ = createEffect(
     () =>
       this._actions$.pipe(
-        ofType(addTimeSpent),
-        filter(() => IS_ELECTRON),
-        withLatestFrom(this._configService.cfg$),
-        // we display pomodoro progress for pomodoro
-        filter(([a, cfg]) => !cfg || !cfg.pomodoro.isEnabled),
+        ofType(TaskSharedActions.updateTask),
+        tap(({ task }) => {
+          if (task.changes.isDone) {
+            window.ea.setProgressBar({
+              progress: -1,
+              progressBarMode: 'none',
+            });
+          }
+        }),
+      ),
+    { dispatch: false },
+  );
+
+  setTaskBarProgress$ = createEffect(
+    () =>
+      this._actions$.pipe(
+        ofType(TimeTrackingActions.addTimeSpent),
+        // The OS taskbar progress bar moves imperceptibly per second; throttling
+        // collapses 1 IPC/sec into ~1 IPC/3s. Leading+trailing keeps the first
+        // tick after start instant and the final value at the end of a window.
+        throttleTime(3000, undefined, { leading: true, trailing: true }),
+        withLatestFrom(this._store$.select(selectIsOsProgressBarOwnedBySession)),
+        // Stand down while a timed focus session owns the OS progress bar, so
+        // that surface only ever has one writer. Gating on the focus overlay
+        // being *shown* instead left both writers active whenever the overlay
+        // was hidden, and the bar cycled between the two values every second
+        // (#9944). Open-ended (Flowtime) sessions own nothing, so the task
+        // progress below keeps the bar meaningful there.
+        filter(([a, isOwnedByFocusSession]) => !isOwnedByFocusSession),
         tap(([{ task }]) => {
           const progress = task.timeSpent / task.timeEstimate;
           window.ea.setProgressBar({
@@ -62,10 +205,4 @@ export class TaskElectronEffects {
       ),
     { dispatch: false },
   );
-
-  constructor(
-    private _actions$: Actions,
-    private _store$: Store<any>,
-    private _configService: GlobalConfigService,
-  ) {}
 }

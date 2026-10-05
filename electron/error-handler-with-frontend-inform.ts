@@ -6,7 +6,7 @@ const WAIT_FOR_WIN_TIMEOUT_DURATION = 4000;
 
 export const errorHandlerWithFrontendInform = (
   e: Error | unknown | string = 'UNDEFINED ERROR',
-  additionalLogInfo?: any,
+  additionalLogInfo?: unknown,
 ): void => {
   const errObj = new Error(e as string);
 
@@ -30,8 +30,8 @@ function _isReadyForFrontEndError(): boolean {
 // eslint-disable-next-line prefer-arrow/prefer-arrow-functions
 function _handleError(
   e: Error | unknown | string,
-  additionalLogInfo: any,
-  errObj: any,
+  additionalLogInfo: unknown,
+  errObj: Error,
 ): void {
   const mainWin = getWin();
   const stack = errObj.stack;
@@ -47,11 +47,57 @@ function _handleError(
   if (_isReadyForFrontEndError()) {
     mainWin.webContents.send(IPC.ERROR, {
       error: e,
-      errorStr: e && (e as any).toString(),
+      errorStr: _getErrorStr(e),
       stack,
     });
   } else {
     error('Electron Error: Frontend not loaded. Could not send error to renderer.');
     throw errObj;
   }
+}
+
+const OBJECT_OBJECT_STR = '[object Object]';
+
+// eslint-disable-next-line prefer-arrow/prefer-arrow-functions
+function _getErrorStr(e: unknown): string {
+  if (typeof e === 'string') {
+    return e;
+  }
+
+  if (e == null) {
+    return 'Unknown error';
+  }
+
+  // Check for message property first (standard Error and custom errors)
+  if (typeof (e as any).message === 'string' && (e as any).message) {
+    return (e as any).message;
+  }
+
+  if (e instanceof Error) {
+    return e.toString();
+  }
+
+  // Check for name property
+  if (typeof (e as any).name === 'string' && (e as any).name) {
+    return (e as any).name;
+  }
+
+  if (typeof e === 'object') {
+    try {
+      const jsonStr = JSON.stringify(e);
+      if (jsonStr && jsonStr !== '{}') {
+        return jsonStr;
+      }
+    } catch {
+      // Circular reference - fall through
+    }
+
+    // Try toString but check for [object Object]
+    const str = String(e);
+    if (str && str !== OBJECT_OBJECT_STR) {
+      return str;
+    }
+  }
+
+  return 'Unknown error (unable to extract message)';
 }

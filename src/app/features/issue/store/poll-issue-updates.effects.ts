@@ -1,67 +1,157 @@
-import { Injectable } from '@angular/core';
-import { Actions, createEffect, ofType } from '@ngrx/effects';
-import { forkJoin, merge, Observable } from 'rxjs';
-import { filter, first, mapTo, switchMap, tap } from 'rxjs/operators';
-import { ISSUE_PROVIDER_TYPES } from '../issue.const';
+import { Injectable, inject } from '@angular/core';
+import { createEffect, ofType } from '@ngrx/effects';
+import { LOCAL_ACTIONS } from '../../../util/local-actions.token';
+import { EMPTY, from, merge, Observable, timer } from 'rxjs';
+import { catchError, first, map, switchMap } from 'rxjs/operators';
 import { IssueService } from '../issue.service';
-import { TaskWithSubTasks } from '../../tasks/task.model';
+import { Task, TaskWithSubTasks } from '../../tasks/task.model';
 import { WorkContextService } from '../../work-context/work-context.service';
 import { setActiveWorkContext } from '../../work-context/store/work-context.actions';
-import { updateProjectIssueProviderCfg } from '../../project/store/project.actions';
+import { loadAllData } from '../../../root-store/meta/load-all-data.action';
+import { Store } from '@ngrx/store';
+import { IssueProvider } from '../issue.model';
+import { selectEnabledIssueProviders } from './issue-provider.selectors';
+import { DELAY_BEFORE_ISSUE_POLLING, ICAL_TYPE } from '../issue.const';
+import { isPluginIssueProvider } from '../issue.model';
+import {
+  selectAllCalendarIssueTasks,
+  selectAllTasks,
+} from '../../tasks/store/task.selectors';
+import { IssueLog } from '../../../core/log';
 
 @Injectable()
 export class PollIssueUpdatesEffects {
+  private _store = inject(Store);
+  private _actions$ = inject(LOCAL_ACTIONS);
+  private readonly _issueService = inject(IssueService);
+  private readonly _workContextService = inject(WorkContextService);
+
   pollIssueTaskUpdatesActions$: Observable<unknown> = this._actions$.pipe(
-    ofType(setActiveWorkContext, updateProjectIssueProviderCfg.type),
+    ofType(setActiveWorkContext, loadAllData),
   );
 
-  pollIssueChangesForCurrentContext$: Observable<any> = createEffect(
+  /**
+   * Polls issue updates for providers scoped to the current work context.
+   * Restarts on every context switch or data load.
+   */
+  pollIssueChangesForCurrentContext$: Observable<unknown> = createEffect(
     () =>
       this.pollIssueTaskUpdatesActions$.pipe(
+        switchMap(() => this._store.select(selectEnabledIssueProviders).pipe(first())),
+        switchMap((enabledProviders: IssueProvider[]) => {
+          const providers = enabledProviders.filter(
+            (provider) =>
+              provider.isAutoPoll &&
+              // Exclude 'always' providers (handled by pollIssueChangesAlways$), keep ICAL
+              (provider.pollingMode !== 'always' ||
+                provider.issueProviderKey === ICAL_TYPE) &&
+              this._issueService.getPollInterval(provider.issueProviderKey) > 0,
+          );
+
+          if (providers.length === 0) {
+            return EMPTY;
+          }
+
+          return merge(
+            ...providers.map((provider) => this._createUpdatePollTimer(provider)),
+          );
+        }),
+      ),
+    { dispatch: false },
+  );
+
+  /**
+   * Polls issue updates for providers with pollingMode 'always'.
+   * Starts once on the first trigger and runs continuously, reacting
+   * only to provider configuration changes -- not to context switches.
+   */
+  pollIssueChangesAlways$: Observable<unknown> = createEffect(
+    () =>
+      this.pollIssueTaskUpdatesActions$.pipe(
+        first(),
         switchMap(() =>
-          merge(
-            ...ISSUE_PROVIDER_TYPES.map((providerKey) =>
-              this._issueService.getPollTimer$(providerKey).pipe(
-                switchMap(() =>
-                  this._workContextService.allTasksForCurrentContext$.pipe(
-                    first(),
-                    switchMap((tasks) => {
-                      const issueTasksForProvider = tasks.filter(
-                        (task) => task.issueType === providerKey,
-                      );
-                      return forkJoin(
-                        issueTasksForProvider.map((task) => {
-                          if (!task.projectId) {
-                            throw new Error('No project for task');
-                          }
-                          return this._issueService
-                            .isPollIssueChangesEnabledForProjectOnce$(
-                              providerKey,
-                              task.projectId,
-                            )
-                            .pipe(
-                              filter((isEnabled) => isEnabled),
-                              mapTo(task),
-                            );
-                        }),
-                      );
-                    }),
-                    tap((issueTasks: TaskWithSubTasks[]) =>
-                      this._issueService.refreshIssueTasks(issueTasks),
-                    ),
-                  ),
+          this._store.select(selectEnabledIssueProviders).pipe(
+            switchMap((enabledProviders: IssueProvider[]) => {
+              const alwaysProviders = enabledProviders.filter(
+                (provider) =>
+                  provider.isAutoPoll &&
+                  provider.pollingMode === 'always' &&
+                  provider.issueProviderKey !== ICAL_TYPE &&
+                  this._issueService.getPollInterval(provider.issueProviderKey) > 0,
+              );
+
+              if (alwaysProviders.length === 0) {
+                return EMPTY;
+              }
+
+              return merge(
+                ...alwaysProviders.map((provider) =>
+                  this._createUpdatePollTimer(provider),
                 ),
-              ),
-            ),
+              );
+            }),
           ),
         ),
       ),
     { dispatch: false },
   );
 
-  constructor(
-    private _actions$: Actions,
-    private readonly _issueService: IssueService,
-    private readonly _workContextService: WorkContextService,
-  ) {}
+  private _createUpdatePollTimer(provider: IssueProvider): Observable<unknown> {
+    return timer(
+      DELAY_BEFORE_ISSUE_POLLING,
+      this._issueService.getPollInterval(provider.issueProviderKey),
+    ).pipe(
+      switchMap(() => this._getTasksForProvider(provider)),
+      switchMap((issueTasks: Task[]) => {
+        if (issueTasks.length === 0) {
+          return EMPTY;
+        }
+        return from(this._issueService.refreshIssueTasks(issueTasks, provider)).pipe(
+          catchError((err) => {
+            IssueLog.error('Error polling issue updates for ' + provider.id, err);
+            return EMPTY;
+          }),
+        );
+      }),
+    );
+  }
+
+  /**
+   * Gets tasks to refresh for a provider.
+   * For calendar (ICAL) providers or providers with pollingMode 'always',
+   * returns ALL matching tasks across all projects.
+   * For other providers, returns only tasks in the current work context.
+   */
+  private _getTasksForProvider(provider: IssueProvider): Observable<Task[]> {
+    if (
+      provider.issueProviderKey === ICAL_TYPE ||
+      isPluginIssueProvider(provider.issueProviderKey)
+    ) {
+      // For calendar/plugin providers, poll ALL calendar tasks across all projects
+      return this._store.select(selectAllCalendarIssueTasks).pipe(
+        first(),
+        map((tasks) =>
+          tasks.filter((task) => task.issueProviderId === provider.id && !!task.issueId),
+        ),
+      );
+    }
+
+    if (provider.pollingMode === 'always') {
+      // Poll ALL tasks for this provider across all projects
+      return this._store.select(selectAllTasks).pipe(
+        first(),
+        map((tasks: Task[]) =>
+          tasks.filter((task) => task.issueProviderId === provider.id && !!task.issueId),
+        ),
+      );
+    }
+
+    // For other providers, only poll tasks in the current context
+    return this._workContextService.allTasksForCurrentContext$.pipe(
+      first(),
+      map((tasks: TaskWithSubTasks[]) =>
+        tasks.filter((task) => task.issueProviderId === provider.id && !!task.issueId),
+      ),
+    );
+  }
 }

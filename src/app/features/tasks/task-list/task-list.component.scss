@@ -1,4 +1,4 @@
-@import '../../../../variables';
+@use '../../../../styles/_globals.scss' as *;
 
 :host {
   display: block;
@@ -11,7 +11,7 @@
   position: relative;
 
   ::ng-deep task-list & {
-    margin: 2px 5px 0 5px;
+    margin: var(--s-quarter) 5px 0 5px;
 
     @include mq(xs, max) {
       margin: 1px 0 0 10px;
@@ -19,12 +19,22 @@
   }
 }
 
-:host-context(.isSmallMainContainer) {
-  ::ng-deep task-list task-list {
-    margin: 1px 0 0 10px;
-  }
+// Sub-task drop lists keep their drag-drop padding INSIDE the cdkDropList
+// element (`.task-list-inner`) instead of on :host, so the strip above the
+// first subtask and below the last one becomes part of the CDK drop rect. A
+// task dragged into that strip then enters the list and CDK drops it as the
+// first / last child (SingleAxisSortStrategy._shouldEnterAsFirstChild).
+// Without it, the only target for the first/last slot is half of the edge row,
+// which is awkwardly small to hit (#7905 scenario B). The matching :host
+// padding is dropped for sub-lists so the visible gap stays compact.
+:host-context(.sub-tasks) {
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
+.task-list-inner[data-list-id='SUB'] {
+  padding: var(--s) 0;
+}
 
 .done-task-box {
   text-align: center;
@@ -34,17 +44,50 @@
 }
 
 .no-tasks {
-  position: absolute;
+  @include center;
   text-align: center;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+  width: 90%;
+
+  color: var(--text-color-muted);
 }
 
+// Reads as a quiet section label (like the work view header labels), not as
+// another task row.
 .expand-tasks-btn {
-  opacity: 0.8;
+  // No extra opacity: --text-color-muted is already ~0.66 alpha, and multiplying
+  // the two dropped this 12px label below the 4.5:1 contrast minimum.
+  mat-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+    line-height: 18px;
+    color: var(--text-color-muted);
+  }
+}
 
-  &:hover {
-    opacity: 1;
+.expand-tasks-label {
+  font-size: var(--font-size-sm);
+  letter-spacing: var(--letter-spacing-wide);
+  color: var(--text-color-muted);
+}
+
+// The global placeholder opacity (0.1) is too faint between hairline rows;
+// a stronger ghost plus an accent top line marks the drop slot.
+.cdk-drag-placeholder {
+  opacity: 0.3;
+  border-top: 2px solid var(--c-accent);
+}
+
+.cdk-drag-placeholder,
+.cdk-drag-preview {
+  border-radius: var(--task-border-radius);
+  overflow: hidden;
+
+  ::ng-deep .controls {
+    display: none;
+  }
+  ::ng-deep .box {
+    display: none;
+    box-shadow: none !important;
   }
 }

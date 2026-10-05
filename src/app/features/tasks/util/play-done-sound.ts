@@ -1,55 +1,38 @@
 import { SoundConfig } from '../../config/global-config.model';
+import { TaskLog } from '../../../core/log';
+import { getAudioBuffer, playBuffer } from '../../../util/audio-context';
 
-export const playDoneSound = (soundCfg: SoundConfig, nrOfDoneTasks: number = 0): void => {
-  const speed = 1;
-  const BASE = './assets/snd';
-  const PITCH_OFFSET = -400;
+const BASE = './assets/snd';
+const PITCH_PER_TASK = 50;
+const MAX_PITCH = 300;
+
+/**
+ * Plays the task completion sound with optional pitch variation.
+ *
+ * @param soundCfg - Sound configuration including volume and pitch settings
+ * @param nrOfDoneTasks - Number of completed tasks (affects pitch if enabled)
+ */
+export const playDoneSound = async (
+  soundCfg: SoundConfig,
+  nrOfDoneTasks: number = 0,
+): Promise<void> => {
   const file = `${BASE}/${soundCfg.doneSound}`;
-  // const speed = 0.5;
-  // const a = new Audio('/assets/snd/done4.mp3');
-  // console.log(a);
-  // a.volume = .4;
-  // a.playbackRate = 1.5;
-  // (a as any).mozPreservesPitch = false;
-  // (a as any).webkitPreservesPitch = false;
-  // a.play();
-  console.log(file);
+  // eslint-disable-next-line local-rules/no-user-content-in-logs -- grandfathered log baseline (2026-09), not yet triaged
+  TaskLog.log(file);
 
+  // detune 0 plays the sample at its natural pitch. When the toggle is off we
+  // never shift it; when on, pitch only ever rises above that baseline (50 cents
+  // per completed task, clamped to MAX_PITCH) and never drops below it (#8265).
   const pitchFactor = soundCfg.isIncreaseDoneSoundPitch
-    ? // prettier-ignore
-      PITCH_OFFSET + (nrOfDoneTasks * 50)
+    ? Math.min(nrOfDoneTasks * PITCH_PER_TASK, MAX_PITCH)
     : 0;
 
-  const audioCtx = new ((window as any).AudioContext ||
-    (window as any).webkitAudioContext)();
-  const source = audioCtx.createBufferSource();
-  const request = new XMLHttpRequest();
-  request.open('GET', file, true);
-  request.responseType = 'arraybuffer';
-  request.onload = () => {
-    const audioData = request.response;
-    audioCtx.decodeAudioData(
-      audioData,
-      (buffer: AudioBuffer) => {
-        source.buffer = buffer;
-        source.playbackRate.value = speed;
-        // source.detune.value = 100; // value in cents
-        source.detune.value = pitchFactor; // value in cents
-
-        if (soundCfg.volume !== 100) {
-          const gainNode = audioCtx.createGain();
-          gainNode.gain.value = soundCfg.volume / 100;
-          source.connect(gainNode);
-          gainNode.connect(audioCtx.destination);
-        } else {
-          source.connect(audioCtx.destination);
-        }
-      },
-      (e: DOMException) => {
-        throw new Error('Error with decoding audio data SP: ' + e.message);
-      },
-    );
-  };
-  request.send();
-  source.start(0);
+  try {
+    const buffer = await getAudioBuffer(file);
+    await playBuffer(buffer, soundCfg.volume, (source) => {
+      source.detune.value = pitchFactor;
+    });
+  } catch (e) {
+    TaskLog.err('Error playing done sound:', e);
+  }
 };

@@ -1,90 +1,41 @@
-<ng-container *ngIf="!(isPomodoroEnabled$|async); else deactivatePomodoroEl">
+<div class="electron-drag-bar"></div>
+
+<div
+  class="focus-mode-dialog"
+  role="dialog"
+  [attr.aria-label]="T.GCF.APP_FEATURES.FOCUS_MODE | translate"
+  cdkTrapFocus
+  [cdkTrapFocusAutoCapture]="true"
+>
   <header>
     <banner></banner>
   </header>
-  <main *ngIf="(activePage$|async) as activePage">
-    <button
-      *ngIf="activePage === FocusModePage.ProcrastinationHelp"
-      class="close-btn"
-      mat-icon-button
-      (click)="leaveProcrastinationHelp()"
-    >
-      <mat-icon>close</mat-icon>
-    </button>
-    <button
-      *ngIf="activePage !== FocusModePage.ProcrastinationHelp"
-      class="close-btn"
-      mat-icon-button
-      [matTooltip]="T.F.FOCUS_MODE.CANCEL_FOCUS_SESSION|translate"
-      (click)="cancelFocusSession()"
-    >
-      <mat-icon>close</mat-icon>
-    </button>
-
-    <ng-container [ngSwitch]="activatePage">
-      <div
-        class="scroll-container"
-        *ngSwitchCase="FocusModePage.ProcrastinationHelp"
-        @warpIn
-      >
-        <procrastination></procrastination>
-      </div>
-
-      <focus-mode-task-selection
-        *ngSwitchCase="FocusModePage.TaskSelection"
-        @warpIn
-      ></focus-mode-task-selection>
-
-      <focus-mode-duration-selection
-        *ngSwitchCase="FocusModePage.DurationSelection"
-        @warpIn
-      ></focus-mode-duration-selection>
-
-      <focus-mode-preparation
-        *ngSwitchCase="FocusModePage.Preparation"
-        @warpIn
-      ></focus-mode-preparation>
-
-      <focus-mode-main
-        *ngSwitchCase="FocusModePage.Main"
-        @warpIn
-      ></focus-mode-main>
-
-      <focus-mode-task-done
-        *ngSwitchCase="FocusModePage.SessionDone"
-        @warpIn
-      ></focus-mode-task-done>
-    </ng-container>
-  </main>
-</ng-container>
-
-<ng-template #deactivatePomodoroEl>
-  <button
-    class="close-btn"
-    mat-icon-button
-    [matTooltip]="T.F.FOCUS_MODE.CANCEL_FOCUS_SESSION|translate"
-    (click)="cancelFocusSession()"
-  >
-    <mat-icon>close</mat-icon>
-  </button>
-  <div class="pomodoro-info-wrapper">
-    <div class="pomodoro-info-msg">{{T.F.FOCUS_MODE.POMODORO_INFO|translate}}</div>
-    <div style="text-align: center">
+  @if (activePage()) {
+    <main>
       <button
-        mat-stroked-button
-        color="primary"
-        (click)="deactivatePomodoro()"
+        class="close-btn"
+        mat-icon-button
+        (click)="closeOverlay()"
+        [attr.aria-label]="T.G.CLOSE | translate"
       >
-        <mat-icon>alarm_off</mat-icon>
-        {{T.F.FOCUS_MODE.POMODORO_DISABLE|translate}}
+        <mat-icon>close</mat-icon>
       </button>
-      <button
-        mat-stroked-button
-        (click)="cancelFocusSession()"
-      >
-        <mat-icon>arrow_back</mat-icon>
-        {{T.F.FOCUS_MODE.BACK_TO_PLANNING|translate}}
-      </button>
-    </div>
-  </div>
-</ng-template>
+
+      <!-- Mode selector is now integrated into focus-mode-main component -->
+
+      <!-- -->
+      @switch (activePage()) {
+        <!-- -->
+        @case (FocusScreen.Main) {
+          <focus-mode-main @warpIn></focus-mode-main>
+        }
+        @case (FocusScreen.SessionDone) {
+          <focus-mode-session-done @warpIn></focus-mode-session-done>
+        }
+        @case (FocusScreen.Break) {
+          <focus-mode-break @warpIn></focus-mode-break>
+        }
+      }
+    </main>
+  }
+</div>

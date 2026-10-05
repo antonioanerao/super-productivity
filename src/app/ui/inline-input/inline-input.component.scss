@@ -1,4 +1,4 @@
-@import '../../../_variables.scss';
+@use '../../../styles/_globals.scss' as *;
 
 :host {
   display: inline-block;
@@ -28,7 +28,6 @@
 .value-wrapper {
   display: inline-block;
   user-select: none;
-  -webkit-user-select: none; /* Safari */
   position: relative;
 }
 
@@ -38,15 +37,22 @@ input {
   top: 50%;
   transform: translate(-50%, -50%) scaleX(0);
   opacity: 0;
-  //transition: $transition-fast;
-  background: #fff;
-  color: $light-theme-text-color;
-  padding: $s * 0.5 $s * 0.5;
+  //transition: var(--transition-fast);
+  background: var(--card-bg);
+  color: var(--text-color);
+  padding: var(--s-half) var(--s-half);
   text-align: center;
   font-size: 14px;
+  // Overlays .value-wrapper, which has no size of its own and inherits from
+  // whatever row hosts it. Raising this unconditionally would resize the
+  // overlay on plain desktop hover (see the :host:hover rule below), so it is
+  // scoped to touch where the zoom is the real problem (#9556). The 14px above
+  // must stay: without it the untouched path falls to the ~13px UA default.
+  @include noIosFocusZoomOnTouch();
   min-height: 100%;
 
   @include inlineEditElevation();
+  z-index: 999999;
 
   &.duration-input {
     width: 100%;
@@ -59,5 +65,21 @@ input {
     outline: none;
     transform: translate(-50%, -50%) scaleX(1);
     visibility: visible;
+  }
+}
+
+// Right-anchor inside the planner's time-remaining cell so the expanding
+// input grows leftward and isn't clipped by planner-day's overflow:hidden.
+:host-context(.planner-time-remaining-shared) {
+  input {
+    left: auto;
+    right: calc(var(--s-half) * -1);
+    transform: translateY(-50%) scaleX(0);
+    transform-origin: right center;
+  }
+
+  &:hover input,
+  input:focus {
+    transform: translateY(-50%) scaleX(1);
   }
 }

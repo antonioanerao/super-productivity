@@ -1,19 +1,47 @@
-@import '../../../_variables.scss';
+@use '../collapsible-shared' as *;
 
-:host {
-  display: block;
+@include collapsible-shared;
+
+:host(.is-group) .collapsible-header {
+  padding: calc(var(--s) / 2) var(--s);
+}
+
+// Task-list section headings share one treatment, including user-made sections.
+:host(.task-section) .collapsible-header {
+  min-height: var(--bar-height);
+  padding: 0 var(--s);
+  gap: var(--s-half);
+  text-align: start;
+  border-bottom: 1px solid transparent;
+
+  .collapsible-expand-icon {
+    margin-right: 0;
+    color: var(--text-color-muted);
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+    line-height: 18px;
+  }
+}
+
+// Deliberately typed as a label (small, semibold, muted) rather than as body
+// text, so a heading never reads as just another task row. No uppercase: section
+// titles can be long and user-authored, where caps only add width and noise.
+:host(.task-section) .collapsible-title {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--letter-spacing-wide);
+  color: var(--text-color-muted);
+}
+
+:host(.task-section.isExpanded) .collapsible-header {
+  border-bottom-color: var(--divider-color);
 }
 
 .collapsible-header {
-  cursor: pointer;
-  user-select: none;
-  -webkit-user-select: none; /* Safari */
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-
-  &:focus {
-    outline: none;
+  &:focus-visible {
+    outline: var(--focus-ring-width) solid var(--focus-ring-color);
+    outline-offset: var(--focus-ring-offset);
   }
 
   :host.isInline & {
@@ -27,27 +55,7 @@
 }
 
 .collapsible-title {
-  flex-grow: 1;
-
-  :host.isInline & {
-    //display: inline-block;
+  &.is-drag-handle {
+    cursor: move;
   }
-}
-
-.collapsible-expand-icon {
-  margin-right: $s;
-  transition: all $transition-standard;
-
-  :host.isExpanded & {
-    transform: rotate(180deg);
-  }
-}
-
-.collapsible-panel {
-  height: auto;
-  display: block;
-
-  // make sure we don't produce clunky animations
-  padding: 0 !important;
-  margin: 0 !important;
 }

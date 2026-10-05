@@ -1,41 +1,67 @@
-# builds the app and runs the webversion inside a docker container
+# Build stage
+FROM --platform=$BUILDPLATFORM node:22 AS build
 
-### build ###
+# Accept build arguments for environment variables with defaults
+ARG UNSPLASH_KEY=DUMMY_UNSPLASH_KEY
+ARG UNSPLASH_CLIENT_ID=DUMMY_UNSPLASH_CLIENT_ID
 
-# base image
-FROM node:16 as build
+# Set as environment variables for the build
+ENV UNSPLASH_KEY=$UNSPLASH_KEY
+ENV UNSPLASH_CLIENT_ID=$UNSPLASH_CLIENT_ID
 
-# add app
-COPY . /app
-
-# set working directory
 WORKDIR /app
 
-# add `/app/node_modules/.bin` to $PATH
-ENV PATH /app/node_modules/.bin:$PATH
+# Install git and configure for HTTPS
+# Use single apt-get command to avoid GPG issues
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    --no-install-recommends \
+    git \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --global url."https://github.com/".insteadOf ssh://git@github.com/
 
-RUN npm i
-RUN npm i -g @angular/cli
+# Copy and install dependencies
+COPY package*.json ./
+COPY packages/sync-core/package*.json ./packages/sync-core/
+COPY packages/sync-core/tsconfig*.json ./packages/sync-core/
+COPY packages/sync-core/tsup.config.ts ./packages/sync-core/
+COPY packages/sync-core/src ./packages/sync-core/src
+COPY packages/sync-providers/package*.json ./packages/sync-providers/
+COPY packages/sync-providers/tsconfig*.json ./packages/sync-providers/
+COPY packages/sync-providers/tsup.config.ts ./packages/sync-providers/
+COPY packages/sync-providers/src ./packages/sync-providers/src
+COPY packages/plugin-api/package*.json ./packages/plugin-api/
+COPY packages/plugin-api/tsconfig.json ./packages/plugin-api/
+COPY packages/plugin-api/src ./packages/plugin-api/src
+COPY packages/shared-schema/package*.json ./packages/shared-schema/
+COPY packages/shared-schema/tsconfig.json ./packages/shared-schema/
+COPY packages/shared-schema/tsup.config.ts ./packages/shared-schema/
+COPY packages/shared-schema/src ./packages/shared-schema/src
+COPY tsconfig.json ./
+COPY tools/ ./tools/
+RUN npm ci --ignore-scripts || npm i --ignore-scripts
+RUN npm run prepare
 
-# run linter
-RUN npm run lint
+# Copy source and build
+COPY . .
+# Pass build args as environment variables for the build commands
+RUN UNSPLASH_KEY=$UNSPLASH_KEY UNSPLASH_CLIENT_ID=$UNSPLASH_CLIENT_ID npm run env && npm run lint && npm run buildFrontend:prodWeb
 
-# generate build
-RUN npm run buildFrontend:prodWeb
+# Production stage
+FROM nginx:1
 
-### serve ###
+ENV APP_PORT=80
 
-# base image
-FROM nginx:1-alpine
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends jq curl && rm -rf /var/lib/apt/lists/*
 
-# environmental variables
-ENV PORT=80
+# Copy built app and configs
+COPY --from=build /app/dist/browser /usr/share/nginx/html
+COPY ./nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY ./docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# copy artifact build from the 'build environment'
-COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE $APP_PORT
+WORKDIR /usr/share/nginx/html
 
-# expose port: defaults to 80
-EXPOSE $PORT
-
-# run nginx
-CMD ["nginx", "-g", "daemon off;"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

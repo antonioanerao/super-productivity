@@ -9,25 +9,29 @@ export type OpenProjectTransitionOption =
 
 export interface OpenProjectTransitionConfig {
   // NOTE: keys mirror IssueLocalState type
-  OPEN: OpenProjectTransitionOption;
+  // todo remove this with a proper migration since currently not used
+  OPEN?: OpenProjectTransitionOption;
   IN_PROGRESS: OpenProjectTransitionOption;
   DONE: OpenProjectTransitionOption;
 }
 export interface OpenProjectCfg extends BaseIssueProviderCfg {
-  isSearchIssuesFromOpenProject: boolean;
-  isAutoAddToBacklog: boolean;
-  isAutoPoll: boolean;
   isShowTimeTrackingDialog: boolean;
   isShowTimeTrackingDialogForEachSubTask: boolean;
-  timeTrackingDialogDefaultTime: JiraWorklogExportDefaultTime;
+  /** @deprecated backwards compatibility: optional for persisted data created before this field existed */
+  timeTrackingDialogDefaultTime?: JiraWorklogExportDefaultTime;
   filterUsername: string | null;
   host: string | null;
   projectId: string | null;
   token: string | null;
-  scope: string | null;
+  /** @deprecated backwards compatibility: optional for persisted data created before this field existed */
+  scope?: string | null;
   isTransitionIssuesEnabled: boolean;
   isSetProgressOnTaskDone: boolean;
-  progressOnDone: number;
-  transitionConfig: OpenProjectTransitionConfig;
-  availableTransitions: OpenProjectOriginalStatus[];
+  progressOnDone?: number;
+  transitionConfig?: OpenProjectTransitionConfig;
+  availableTransitions?:
+    | OpenProjectOriginalStatus[]
+    | { id: string; name: string; [key: string]: unknown }[];
+  /** @deprecated backwards compatibility: optional for persisted data created before this field existed */
+  metadata?: { string: any };
 }

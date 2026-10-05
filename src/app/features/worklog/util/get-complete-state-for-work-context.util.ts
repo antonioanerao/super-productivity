@@ -2,6 +2,7 @@ import { WorkContext, WorkContextType } from '../../work-context/work-context.mo
 import { Dictionary, EntityState } from '@ngrx/entity';
 import { Task } from '../../tasks/task.model';
 import { TODAY_TAG } from '../../tag/tag.const';
+import { resolveDisplayTagIds } from '../../tasks/util/resolve-display-tag-ids.util';
 
 export const getCompleteStateForWorkContext = (
   workContext: WorkContext,
@@ -56,18 +57,21 @@ const _filterIdsForProject = (
   workContextId: string,
 ): string[] =>
   (state.ids as string[]).filter((id) => {
-    const t = state.entities[id] as Task;
-    return !!t.parentId
-      ? (state.entities[t.parentId] as Task).projectId === workContextId
-      : t.projectId === workContextId;
+    const t = state.entities[id];
+    if (!t) return false;
+    if (t.parentId) {
+      const parent = state.entities[t.parentId];
+      return parent ? parent.projectId === workContextId : t.projectId === workContextId;
+    }
+    return t.projectId === workContextId;
   });
 
 const _filterIdsForTag = (state: EntityState<Task>, workContextId: string): string[] =>
   (state.ids as string[]).filter((id) => {
-    const t = state.entities[id] as Task;
-    return !!t.parentId
-      ? (state.entities[t.parentId] as Task).tagIds.includes(workContextId)
-      : t.tagIds.includes(workContextId);
+    const t = state.entities[id];
+    if (!t) return false;
+    const parent = t.parentId ? state.entities[t.parentId] : undefined;
+    return resolveDisplayTagIds(t, parent).includes(workContextId);
   });
 
 const _limitStateToIds = (

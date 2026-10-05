@@ -1,22 +1,39 @@
-import { ChangeDetectionStrategy, Component, Inject } from '@angular/core';
-import { MAT_DIALOG_DATA, MatDialogRef } from '@angular/material/dialog';
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
+import {
+  MAT_DIALOG_DATA,
+  MatDialogActions,
+  MatDialogContent,
+  MatDialogRef,
+} from '@angular/material/dialog';
 import { T } from '../../t.const';
+import { MatFormField, MatLabel } from '@angular/material/form-field';
+import { MatInput } from '@angular/material/input';
+import { FormsModule } from '@angular/forms';
+import { MatButton } from '@angular/material/button';
+import { TranslatePipe } from '@ngx-translate/core';
 
 @Component({
   selector: 'dialog-prompt',
   templateUrl: './dialog-prompt.component.html',
   styleUrls: ['./dialog-prompt.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [
+    MatDialogContent,
+    MatFormField,
+    MatLabel,
+    MatInput,
+    FormsModule,
+    MatDialogActions,
+    MatButton,
+    TranslatePipe,
+  ],
 })
 export class DialogPromptComponent {
-  T: typeof T = T;
-  txtVal: string = '';
+  private _matDialogRef = inject<MatDialogRef<DialogPromptComponent>>(MatDialogRef);
+  data = inject(MAT_DIALOG_DATA);
 
-  constructor(
-    private _matDialogRef: MatDialogRef<DialogPromptComponent>,
-    // TODO rename data.placeholder to data.label
-    @Inject(MAT_DIALOG_DATA) public data: any,
-  ) {}
+  T: typeof T = T;
+  txtVal: string = this.data.txtValue || '';
 
   close(isSave: boolean): void {
     if (isSave) {

@@ -1,10 +1,19 @@
 // HELPER
 // ------
-import { Task, TaskState, TaskWithSubTasks, TimeSpentOnDay } from '../task.model';
+import {
+  Task,
+  TaskCopy,
+  TaskState,
+  TaskWithSubTasks,
+  TimeSpentOnDay,
+} from '../task.model';
 import { calcTotalTimeSpent } from '../util/calc-total-time-spent';
 import { taskAdapter } from './task.adapter';
 import { filterOutId } from '../../../util/filter-out-id';
 import { Update } from '@ngrx/entity';
+import { TaskLog } from '../../../core/log';
+import { devError } from '../../../util/dev-error';
+import { sumSubTaskTimeLeft } from '../util/sum-sub-task-time-left';
 
 export const getTaskById = (taskId: string, state: TaskState): Task => {
   if (!state.entities[taskId]) {
@@ -29,19 +38,31 @@ export const reCalcTimeSpentForParentIfParent = (
   state: TaskState,
 ): TaskState => {
   if (parentId) {
-    const parentTask: Task = getTaskById(parentId, state);
-    const subTasks = parentTask.subTaskIds.map((id) => state.entities[id] as Task);
+    const parentTask = state.entities[parentId];
+    if (!parentTask) {
+      TaskLog.err(
+        `Parent task ${parentId} not found in reCalcTimeSpentForParentIfParent`,
+      );
+      return state;
+    }
+
+    const subTasks = parentTask.subTaskIds
+      .map((id) => state.entities[id])
+      .filter((task): task is Task => !!task);
+
     const timeSpentOnDayParent: { [key: string]: number } = {};
 
     subTasks.forEach((subTask: Task) => {
-      Object.keys(subTask.timeSpentOnDay).forEach((strDate) => {
-        if (subTask.timeSpentOnDay[strDate]) {
-          if (!timeSpentOnDayParent[strDate]) {
-            timeSpentOnDayParent[strDate] = 0;
+      if (subTask.timeSpentOnDay) {
+        Object.keys(subTask.timeSpentOnDay).forEach((strDate) => {
+          if (subTask.timeSpentOnDay[strDate]) {
+            if (!timeSpentOnDayParent[strDate]) {
+              timeSpentOnDayParent[strDate] = 0;
+            }
+            timeSpentOnDayParent[strDate] += subTask.timeSpentOnDay[strDate];
           }
-          timeSpentOnDayParent[strDate] += subTask.timeSpentOnDay[strDate];
-        }
-      });
+        });
+      }
     });
     return taskAdapter.updateOne(
       {
@@ -61,26 +82,45 @@ export const reCalcTimeSpentForParentIfParent = (
 export const reCalcTimeEstimateForParentIfParent = (
   parentId: string,
   state: TaskState,
+  upd?: Update<TaskCopy>,
 ): TaskState => {
-  if (parentId) {
-    const parentTask: Task = state.entities[parentId] as Task;
-    const subTasks = parentTask.subTaskIds.map((id) => state.entities[id] as Task);
-
-    return taskAdapter.updateOne(
-      {
-        id: parentId,
-        changes: {
-          timeEstimate: subTasks.reduce(
-            (acc: number, task: Task) => acc + task.timeEstimate,
-            0,
-          ),
-        },
-      },
-      state,
+  const parentTask = state.entities[parentId];
+  if (!parentTask) {
+    TaskLog.err(
+      `Parent task ${parentId} not found in reCalcTimeEstimateForParentIfParent`,
     );
-  } else {
     return state;
   }
+
+  const subTasks = parentTask.subTaskIds
+    .map((id) => {
+      const task = state.entities[id];
+      if (!task) return null;
+      // we do this since we also need to consider the done value of the update
+      return upd && upd.id === id ? { ...task, ...upd.changes } : task;
+    })
+    .filter((task): task is Task => !!task);
+  // TaskLog.log(
+  //   subTasks.reduce((acc: number, st: Task) => {
+  //     TaskLog.log(
+  //       (st.isDone ? 0 : Math.max(0, st.timeEstimate - st.timeSpent)) / 60 / 1000,
+  //     );
+  //
+  //     return acc + (st.isDone ? 0 : Math.max(0, st.timeEstimate - st.timeSpent));
+  //   }, 0) /
+  //     60 /
+  //     1000,
+  // );
+
+  return taskAdapter.updateOne(
+    {
+      id: parentId,
+      changes: {
+        timeEstimate: sumSubTaskTimeLeft(subTasks),
+      },
+    },
+    state,
+  );
 };
 
 export const updateDoneOnForTask = (upd: Update<Task>, state: TaskState): TaskState => {
@@ -88,9 +128,14 @@ export const updateDoneOnForTask = (upd: Update<Task>, state: TaskState): TaskSt
   const isToDone = upd.changes.isDone === true;
   const isToUnDone = upd.changes.isDone === false;
   if (isToDone || isToUnDone) {
+    // Completion records ONLY `doneOn`. It never synthesizes a `dueDay`: that
+    // stays a pure planning field. Any existing schedule is left untouched, and
+    // the Today "Done" list is driven by `isDone`/`doneOn`, not `dueDay`.
+    const doneOn =
+      typeof upd.changes.doneOn === 'number' ? upd.changes.doneOn : Date.now();
     const changes = {
-      ...(isToDone ? { doneOn: Date.now() } : {}),
-      ...(isToUnDone ? { doneOn: null } : {}),
+      ...(isToDone ? { doneOn } : {}),
+      ...(isToUnDone ? { doneOn: undefined } : {}),
     };
     return taskAdapter.updateOne(
       {
@@ -104,6 +149,83 @@ export const updateDoneOnForTask = (upd: Update<Task>, state: TaskState): TaskSt
   }
 };
 
+export const updateStartDateForRepeatableTask = (
+  upd: Update<Task>,
+  state: TaskState,
+): TaskState => {
+  const task = state.entities[upd.id] as Task;
+  const isToDone = upd.changes.isDone === true;
+  const isToUnDone = upd.changes.isDone === false;
+
+  if (isToDone || isToUnDone) {
+    const changes = {
+      ...(isToDone ? { doneOn: Date.now(), dueDay: undefined } : {}),
+      ...(isToUnDone ? { doneOn: undefined } : {}),
+    };
+    return taskAdapter.updateOne(
+      {
+        id: task.id,
+        changes,
+      },
+      state,
+    );
+  } else {
+    return state;
+  }
+};
+
+/**
+ * Incrementally updates parent's timeSpentOnDay based on delta from subtask change.
+ * Much faster than full recalculation when only one day changed.
+ */
+const updateParentTimeSpentIncremental = (
+  parentId: string,
+  oldTimeSpentOnDay: TimeSpentOnDay | undefined,
+  newTimeSpentOnDay: TimeSpentOnDay,
+  state: TaskState,
+): TaskState => {
+  const parent = state.entities[parentId];
+  if (!parent) return state;
+
+  // Find what days changed and by how much
+  const allDays = new Set([
+    ...Object.keys(oldTimeSpentOnDay || {}),
+    ...Object.keys(newTimeSpentOnDay),
+  ]);
+
+  let totalDelta = 0;
+  const parentTimeSpentOnDay = { ...parent.timeSpentOnDay };
+
+  for (const day of allDays) {
+    const oldVal = oldTimeSpentOnDay?.[day] || 0;
+    const newVal = newTimeSpentOnDay[day] || 0;
+    const delta = newVal - oldVal;
+
+    if (delta !== 0) {
+      totalDelta += delta;
+      const currentParentVal = parentTimeSpentOnDay[day] || 0;
+      const newParentVal = currentParentVal + delta;
+
+      if (newParentVal > 0) {
+        parentTimeSpentOnDay[day] = newParentVal;
+      } else {
+        delete parentTimeSpentOnDay[day];
+      }
+    }
+  }
+
+  return taskAdapter.updateOne(
+    {
+      id: parentId,
+      changes: {
+        timeSpentOnDay: parentTimeSpentOnDay,
+        timeSpent: parent.timeSpent + totalDelta,
+      },
+    },
+    state,
+  );
+};
+
 export const updateTimeSpentForTask = (
   id: string,
   newTimeSpentOnDay: TimeSpentOnDay,
@@ -114,6 +236,7 @@ export const updateTimeSpentForTask = (
   }
 
   const task = getTaskById(id, state);
+  const oldTimeSpentOnDay = task.timeSpentOnDay;
   const timeSpent = calcTotalTimeSpent(newTimeSpentOnDay);
 
   const stateAfterUpdate = taskAdapter.updateOne(
@@ -127,40 +250,55 @@ export const updateTimeSpentForTask = (
     state,
   );
 
+  // Use incremental update for parent instead of full recalculation
   return task.parentId
-    ? reCalcTimeSpentForParentIfParent(task.parentId, stateAfterUpdate)
+    ? updateParentTimeSpentIncremental(
+        task.parentId,
+        oldTimeSpentOnDay,
+        newTimeSpentOnDay,
+        stateAfterUpdate,
+      )
     : stateAfterUpdate;
 };
 
 export const updateTimeEstimateForTask = (
-  taskId: string,
+  upd: Update<TaskCopy>,
   newEstimate: number | null = null,
   state: TaskState,
 ): TaskState => {
-  if (typeof newEstimate !== 'number') {
-    return state;
+  if (typeof newEstimate === 'number' || 'isDone' in upd.changes) {
+    const task = getTaskById(upd.id as string, state);
+    const stateAfterUpdate =
+      typeof newEstimate === 'number'
+        ? taskAdapter.updateOne(
+            {
+              id: upd.id as string,
+              changes: {
+                timeEstimate: newEstimate,
+              },
+            },
+            state,
+          )
+        : state;
+    return task.parentId
+      ? reCalcTimeEstimateForParentIfParent(task.parentId, stateAfterUpdate, upd)
+      : stateAfterUpdate;
   }
-
-  const task = getTaskById(taskId, state);
-  const stateAfterUpdate = taskAdapter.updateOne(
-    {
-      id: taskId,
-      changes: {
-        timeEstimate: newEstimate,
-      },
-    },
-    state,
-  );
-
-  return task.parentId
-    ? reCalcTimeEstimateForParentIfParent(task.parentId, stateAfterUpdate)
-    : stateAfterUpdate;
+  return state;
 };
 
 export const deleteTaskHelper = (
   state: TaskState,
   taskToDelete: TaskWithSubTasks | Task,
 ): TaskState => {
+  // #9946: without this, an id-less task makes the `parentId === taskToDelete.id`
+  // subtask lookup below match every top-level task (whose parentId is also
+  // undefined) and delete the entire list. Deleting nothing is the safe outcome.
+  if (!taskToDelete.id) {
+    devError('[deleteTaskHelper] Refusing to delete a task without an id');
+    return state;
+  }
+
   let stateCopy: TaskState = taskAdapter.removeOne(taskToDelete.id, state);
 
   let currentTaskId =
@@ -174,13 +312,38 @@ export const deleteTaskHelper = (
 
   // SUB TASK side effects
   // also delete all sub tasks if any
-  if (taskToDelete.subTaskIds) {
-    stateCopy = taskAdapter.removeMany(taskToDelete.subTaskIds, stateCopy);
+  const payloadSubTaskIds = taskToDelete.subTaskIds || [];
+
+  // DEFENSIVE FIX: Also check state for subtasks not in subTaskIds.
+  // This handles race conditions where subtasks were added but parent's
+  // subTaskIds wasn't synced before a SYNC_IMPORT + moveToArchive.
+  // See: https://github.com/johannesjo/super-productivity/issues/XXXX
+  const stateSubTaskIds = (state.ids as string[]).filter(
+    (id) => state.entities[id]?.parentId === taskToDelete.id,
+  );
+
+  // Find orphans: subtasks in state but NOT in payload's subTaskIds
+  const orphanSubTaskIds = stateSubTaskIds.filter(
+    (id) => !payloadSubTaskIds.includes(id),
+  );
+
+  // Log devError if we found orphan subtasks - this indicates an upstream bug
+  if (orphanSubTaskIds.length > 0) {
+    devError(
+      `[deleteTaskHelper] Found ${orphanSubTaskIds.length} orphan subtask(s) not in parent's subTaskIds. ` +
+        `Parent: ${taskToDelete.id}, Orphans: ${orphanSubTaskIds.join(', ')}. ` +
+        `This indicates a sync race condition - subtasks added but parent.subTaskIds not updated before archive.`,
+    );
+  }
+
+  // Combine both lists to ensure all subtasks are removed
+  const allSubTaskIds = [...new Set([...payloadSubTaskIds, ...stateSubTaskIds])];
+
+  if (allSubTaskIds.length > 0) {
+    stateCopy = taskAdapter.removeMany(allSubTaskIds, stateCopy);
     // unset current if one of them is the current task
     currentTaskId =
-      !!currentTaskId && taskToDelete.subTaskIds.includes(currentTaskId)
-        ? null
-        : currentTaskId;
+      !!currentTaskId && allSubTaskIds.includes(currentTaskId) ? null : currentTaskId;
   }
 
   return {
@@ -196,6 +359,12 @@ export const removeTaskFromParentSideEffects = (
 ): TaskState => {
   const parentId: string = taskToRemove.parentId as string;
   const parentTask = state.entities[parentId] as Task;
+
+  if (!parentTask) {
+    TaskLog.err(`Parent task ${parentId} not found in removeTaskFromParentSideEffects`);
+    return state;
+  }
+
   const isWasLastSubTask = parentTask.subTaskIds.length === 1;
 
   let newState = taskAdapter.updateOne(

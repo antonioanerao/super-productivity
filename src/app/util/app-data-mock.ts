@@ -1,14 +1,18 @@
-import { AppDataComplete } from '../imex/sync/sync.model';
-import { MODEL_VERSION_KEY } from '../app.constants';
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports -- grandfathered layer-boundary debt
 import { DEFAULT_GLOBAL_CONFIG } from '../features/config/default-global-config.const';
 import { createEmptyEntity } from './create-empty-entity';
+import { AppDataComplete } from '../op-log/model/model-config';
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports -- grandfathered layer-boundary debt
+import { initialTimeTrackingState } from '../features/time-tracking/store/time-tracking.reducer';
 
 export const createAppDataCompleteMock = (): AppDataComplete => ({
   project: {
     ...createEmptyEntity(),
-    [MODEL_VERSION_KEY]: 5,
   },
-  archivedProjects: {},
+  menuTree: {
+    tagTree: [],
+    projectTree: [],
+  },
   globalConfig: DEFAULT_GLOBAL_CONFIG,
 
   task: {
@@ -16,18 +20,17 @@ export const createAppDataCompleteMock = (): AppDataComplete => ({
     ids: [],
     currentTaskId: null,
     selectedTaskId: null,
-    taskAdditionalInfoTargetPanel: null,
+    taskDetailTargetPanel: null,
     lastCurrentTaskId: null,
     isDataLoaded: false,
   },
   tag: createEmptyEntity(),
+  section: createEmptyEntity(),
   simpleCounter: {
     ...createEmptyEntity(),
     ids: [],
   },
-  taskArchive: createEmptyEntity(),
   taskRepeatCfg: createEmptyEntity(),
-  lastLocalSyncModelChange: 0,
 
   // OPTIONAL though they are really not
   reminders: [],
@@ -35,8 +38,28 @@ export const createAppDataCompleteMock = (): AppDataComplete => ({
     ...createEmptyEntity(),
     todayOrder: [],
   },
-  bookmark: {},
   metric: createEmptyEntity(),
-  improvement: createEmptyEntity() as any,
-  obstruction: createEmptyEntity(),
+  planner: { days: {}, addPlannedTasksDialogLastShown: undefined },
+  issueProvider: createEmptyEntity() as any,
+  boards: {
+    boardCfgs: [],
+  },
+  timeTracking: {
+    project: {},
+    tag: {},
+  },
+
+  archiveYoung: {
+    task: createEmptyEntity(),
+    timeTracking: initialTimeTrackingState,
+    lastTimeTrackingFlush: 0,
+  },
+  archiveOld: {
+    task: createEmptyEntity(),
+    timeTracking: initialTimeTrackingState,
+    lastTimeTrackingFlush: 0,
+  },
+
+  pluginMetadata: [],
+  pluginUserData: [],
 });

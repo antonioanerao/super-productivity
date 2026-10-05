@@ -1,45 +1,68 @@
-import { Injectable } from '@angular/core';
-import { Actions, createEffect, ofType } from '@ngrx/effects';
-import { filter, tap, withLatestFrom } from 'rxjs/operators';
-import { Store } from '@ngrx/store';
-import { CONFIG_FEATURE_NAME } from './global-config.reducer';
-import { PersistenceService } from '../../../core/persistence/persistence.service';
-import { IS_ELECTRON, LanguageCode } from '../../../app.constants';
+import { inject, Injectable } from '@angular/core';
+import { createEffect, ofType } from '@ngrx/effects';
+import { LOCAL_ACTIONS } from '../../../util/local-actions.token';
+import {
+  concatMap,
+  distinctUntilChanged,
+  filter,
+  map,
+  switchMap,
+  tap,
+  withLatestFrom,
+} from 'rxjs/operators';
+import { Action, Store } from '@ngrx/store';
+import { IS_MAC_TOKEN } from '../../../util/is-mac';
+import {
+  KeyboardLayout,
+  KeyboardLayoutService,
+} from '../../../core/keyboard-layout/keyboard-layout.service';
+import { IS_ELECTRON_TOKEN } from '../../../app.constants';
 import { T } from '../../../t.const';
 import { LanguageService } from '../../../core/language/language.service';
-import { DateService } from 'src/app/core/date/date.service';
+import { DateService } from '../../../core/date/date.service';
 import { SnackService } from '../../../core/snack/snack.service';
 import { loadAllData } from '../../../root-store/meta/load-all-data.action';
 import { DEFAULT_GLOBAL_CONFIG } from '../default-global-config.const';
-import { KeyboardConfig } from '../keyboard-config.model';
+import { KeyboardConfig } from '@sp/keyboard-config';
 import { updateGlobalConfigSection } from './global-config.actions';
+import {
+  selectConfigFeatureState,
+  selectLocalizationConfig,
+  selectMiscConfig,
+} from './global-config.reducer';
+import { mapKeyboardConfigToQwerty } from '../keyboard-shortcut.util';
+import { MiscConfig } from '../global-config.model';
+import { AppStateActions } from '../../../root-store/app-state/app-state.actions';
+import { TaskSharedActions } from '../../../root-store/meta/task-shared.actions';
+import { selectAllTasks } from '../../tasks/store/task.selectors';
+import { normalizeStartOfNextDayConfig } from '../normalize-start-of-next-day-config';
+import { Log } from '../../../core/log';
+import { bulkApplyOperations } from '../../../op-log/apply/bulk-hydration.action';
+import { FULL_STATE_OP_TYPES } from '../../../op-log/core/operation.types';
+
+const LAYOUT_DETECTION_TIMEOUT_MS = 1000;
 
 @Injectable()
 export class GlobalConfigEffects {
-  updateConfig$: any = createEffect(
-    () =>
-      this._actions$.pipe(
-        ofType(updateGlobalConfigSection),
-        withLatestFrom(this._store),
-        tap(([action, store]) =>
-          this._saveToLs([action, store], {
-            isSkipSyncModelChangeUpdate: !!action.isSkipLastActiveUpdate,
-          }),
-        ),
-      ),
-    { dispatch: false },
-  );
+  private _actions$ = inject(LOCAL_ACTIONS);
+  private _languageService = inject(LanguageService);
+  private _dateService = inject(DateService);
+  private _snackService = inject(SnackService);
+  private _store = inject(Store);
+  private _keyboardLayoutService = inject(KeyboardLayoutService);
+  private _isElectron = inject(IS_ELECTRON_TOKEN);
+  private _isMac = inject(IS_MAC_TOKEN);
 
-  snackUpdate$: any = createEffect(
+  snackUpdate$ = createEffect(
     () =>
       this._actions$.pipe(
         ofType(updateGlobalConfigSection),
-        tap(({ sectionKey, sectionCfg }) => {
+        tap(({ sectionKey, sectionCfg, isSkipSnack }) => {
           const isPublicSection = sectionKey.charAt(0) !== '_';
           const isPublicPropUpdated = Object.keys(sectionCfg).find(
             (key) => key.charAt(0) !== '_',
           );
-          if (isPublicPropUpdated && isPublicSection) {
+          if (isPublicPropUpdated && isPublicSection && !isSkipSnack) {
             this._snackService.open({
               type: 'SUCCESS',
               msg: T.F.CONFIG.S.UPDATE_SECTION,
@@ -51,110 +74,206 @@ export class GlobalConfigEffects {
     { dispatch: false },
   );
 
-  updateGlobalShortcut$: any = createEffect(
+  updateGlobalShortcut$ = createEffect(
     () =>
       this._actions$.pipe(
         ofType(updateGlobalConfigSection),
-        filter(({ sectionKey, sectionCfg }) => IS_ELECTRON && sectionKey === 'keyboard'),
+        filter(
+          ({ sectionKey, sectionCfg }) => this._isElectron && sectionKey === 'keyboard',
+        ),
         tap(({ sectionKey, sectionCfg }) => {
-          const keyboardCfg: KeyboardConfig = sectionCfg as KeyboardConfig;
+          let keyboardCfg: KeyboardConfig = sectionCfg as KeyboardConfig;
+          if (this._isMac) {
+            keyboardCfg = mapKeyboardConfigToQwerty(
+              keyboardCfg,
+              this._keyboardLayoutService.layout,
+            );
+          }
           window.ea.registerGlobalShortcuts(keyboardCfg);
         }),
       ),
     { dispatch: false },
   );
 
-  registerGlobalShortcutInitially$: any = createEffect(
+  registerGlobalShortcutInitially$ = createEffect(
     () =>
       this._actions$.pipe(
         ofType(loadAllData),
-        filter(() => IS_ELECTRON),
-        tap((action) => {
+        filter(() => this._isElectron),
+        concatMap(async (action) => {
           const appDataComplete = action.appDataComplete;
           const keyboardCfg: KeyboardConfig = (
             appDataComplete.globalConfig || DEFAULT_GLOBAL_CONFIG
           ).keyboard;
-          window.ea.registerGlobalShortcuts(keyboardCfg);
+          let layout: KeyboardLayout = new Map();
+          if (this._isMac) {
+            layout = await Promise.race([
+              this._keyboardLayoutService.layoutReady,
+              new Promise<KeyboardLayout>((resolve) => {
+                const timeoutId = setTimeout(() => {
+                  Log.log(
+                    `Layout detection timed out after ${LAYOUT_DETECTION_TIMEOUT_MS}ms. Falling back to empty layout.`,
+                  );
+                  resolve(new Map());
+                }, LAYOUT_DETECTION_TIMEOUT_MS);
+                void this._keyboardLayoutService.layoutReady.then(() =>
+                  clearTimeout(timeoutId),
+                );
+              }),
+            ]);
+          }
+          return { keyboardCfg, layout };
+        }),
+        tap(({ keyboardCfg, layout }) => {
+          let cfg = keyboardCfg;
+          if (this._isMac) {
+            cfg = mapKeyboardConfigToQwerty(keyboardCfg, layout);
+          }
+          window.ea.registerGlobalShortcuts(cfg);
         }),
       ),
     { dispatch: false },
   );
 
-  selectLanguageOnChange: any = createEffect(
+  // Selector-based effect to apply language from state.
+  // This fires on initial load, local changes, AND remote sync.
+  // Intentional: UI config should apply from any source, dispatch: false
+  applyLanguageFromState$ = createEffect(
     () =>
-      this._actions$.pipe(
-        ofType(updateGlobalConfigSection),
-        filter(({ sectionKey, sectionCfg }) => sectionKey === 'lang'),
-        // eslint-disable-next-line
-        filter(({ sectionKey, sectionCfg }) => sectionCfg && (sectionCfg as any).lng),
-        tap(({ sectionKey, sectionCfg }) => {
-          // eslint-disable-next-line
-          this._languageService.setLng((sectionCfg as any)['lng']);
+      this._store.select(selectLocalizationConfig).pipe(
+        map((config) => config.lng),
+        distinctUntilChanged(),
+        tap((lng) => {
+          if (lng === undefined) {
+            // Initial state - try autoswitch first, then detect browser language
+            const autoswitched = this._languageService.tryAutoswitch();
+            if (!autoswitched) this._languageService.setLng();
+          } else {
+            this._languageService.setLng(lng);
+          }
         }),
       ),
     { dispatch: false },
   );
 
-  selectLanguageOnLoad: any = createEffect(
-    () =>
-      this._actions$.pipe(
-        ofType(loadAllData),
-        tap(({ appDataComplete }) => {
-          const cfg = appDataComplete.globalConfig || DEFAULT_GLOBAL_CONFIG;
-          const lng = cfg && cfg.lang && cfg.lang.lng;
-          this._languageService.setLng(lng as LanguageCode);
-        }),
+  setStartOfNextDayDiffOnChange = createEffect(() =>
+    this._actions$.pipe(
+      ofType(updateGlobalConfigSection),
+      filter(({ sectionKey }) => sectionKey === 'misc'),
+      filter(
+        ({ sectionCfg }) =>
+          sectionCfg &&
+          (typeof (sectionCfg as MiscConfig).startOfNextDay === 'number' ||
+            typeof (sectionCfg as MiscConfig).startOfNextDayTime === 'string'),
       ),
-    { dispatch: false },
+      withLatestFrom(this._store.select(selectAllTasks)),
+      switchMap(([{ sectionCfg }, allTasks]) => {
+        const oldTodayStr = this._dateService.todayStr();
+        const miscCfg = normalizeStartOfNextDayConfig(sectionCfg as Partial<MiscConfig>);
+        this._dateService.setStartOfNextDayDiff(
+          miscCfg.startOfNextDayTime,
+          miscCfg.startOfNextDay,
+        );
+        const newTodayStr = this._dateService.todayStr();
+
+        const actions: Action[] = [
+          AppStateActions.setTodayString({
+            todayStr: newTodayStr,
+            startOfNextDayDiffMs: this._dateService.getStartOfNextDayDiffMs(),
+          }),
+        ];
+
+        // Migrate active task dueDays so "today" tasks stay "today" after offset change.
+        // Archived tasks are intentionally excluded — their dueDay is historical.
+        if (oldTodayStr !== newTodayStr) {
+          const taskUpdates = allTasks
+            .filter((t) => t.dueDay === oldTodayStr)
+            .map((t) => ({ id: t.id, changes: { dueDay: newTodayStr } }));
+
+          if (taskUpdates.length > 0) {
+            actions.push(TaskSharedActions.updateTasks({ tasks: taskUpdates }));
+          }
+        }
+
+        return actions;
+      }),
+    ),
   );
 
-  setStartOfNextDayDiffOnChange: any = createEffect(
-    () =>
-      this._actions$.pipe(
-        ofType(updateGlobalConfigSection),
-        filter(({ sectionKey, sectionCfg }) => sectionKey === 'misc'),
-        // eslint-disable-next-line
-        filter(
-          ({ sectionKey, sectionCfg }) =>
-            sectionCfg && (sectionCfg as any).startOfNextDay,
+  setStartOfNextDayDiffOnLoad = createEffect(() =>
+    this._actions$.pipe(
+      ofType(loadAllData),
+      tap(({ appDataComplete }) => {
+        const cfg = appDataComplete.globalConfig || DEFAULT_GLOBAL_CONFIG;
+        const misc = cfg?.misc ?? DEFAULT_GLOBAL_CONFIG.misc;
+        const normalizedMisc = normalizeStartOfNextDayConfig(misc);
+        this._dateService.setStartOfNextDayDiff(
+          normalizedMisc.startOfNextDayTime,
+          normalizedMisc.startOfNextDay,
+        );
+      }),
+      map(() =>
+        AppStateActions.setTodayString({
+          todayStr: this._dateService.todayStr(),
+          startOfNextDayDiffMs: this._dateService.getStartOfNextDayDiffMs(),
+        }),
+      ),
+    ),
+  );
+
+  // Bulk replay intentionally hides its inner actions from effects. Reconcile this
+  // local, non-persistent runtime state after reducers finish, but keep the persistent
+  // dueDay migration in the direct local-change effect above.
+  setStartOfNextDayDiffOnBulkApply = createEffect(() =>
+    this._actions$.pipe(
+      ofType(bulkApplyOperations),
+      filter(({ operations }) =>
+        operations.some(
+          (op) =>
+            (op.entityType === 'GLOBAL_CONFIG' && op.entityId === 'misc') ||
+            FULL_STATE_OP_TYPES.has(op.opType),
         ),
-        tap(({ sectionKey, sectionCfg }) => {
-          // eslint-disable-next-line
-          this._dateService.setStartOfNextDayDiff((sectionCfg as any)['startOfNextDay']);
+      ),
+      withLatestFrom(this._store.select(selectMiscConfig)),
+      map(([, misc]) => {
+        const normalizedMisc = normalizeStartOfNextDayConfig(misc);
+        this._dateService.setStartOfNextDayDiff(
+          normalizedMisc.startOfNextDayTime,
+          normalizedMisc.startOfNextDay,
+        );
+        return AppStateActions.setTodayString({
+          todayStr: this._dateService.todayStr(),
+          startOfNextDayDiffMs: this._dateService.getStartOfNextDayDiffMs(),
+        });
+      }),
+    ),
+  );
+
+  notifyElectronAboutCfgChange = createEffect(
+    () =>
+      this._actions$.pipe(
+        ofType(updateGlobalConfigSection),
+        filter(() => this._isElectron),
+        withLatestFrom(this._store.select(selectConfigFeatureState)),
+        tap(([action, globalConfig]) => {
+          // Send the entire settings object to electron for overlay initialization
+          window.ea.sendSettingsUpdate(globalConfig);
         }),
       ),
     { dispatch: false },
   );
 
-  setStartOfNextDayDiffOnLoad: any = createEffect(
+  notifyElectronAboutCfgChangeInitially = createEffect(
     () =>
       this._actions$.pipe(
         ofType(loadAllData),
+        filter(() => this._isElectron),
         tap(({ appDataComplete }) => {
           const cfg = appDataComplete.globalConfig || DEFAULT_GLOBAL_CONFIG;
-          const startOfNextDay = cfg && cfg.misc && cfg.misc.startOfNextDay;
-          this._dateService.setStartOfNextDayDiff(startOfNextDay);
+          // Send initial settings to electron for overlay initialization
+          window.ea.sendSettingsUpdate(cfg);
         }),
       ),
     { dispatch: false },
   );
-
-  constructor(
-    private _actions$: Actions,
-    private _persistenceService: PersistenceService,
-    private _languageService: LanguageService,
-    private _dateService: DateService,
-    private _snackService: SnackService,
-    private _store: Store<any>,
-  ) {}
-
-  private _saveToLs(
-    [action, completeState]: [any, any],
-    { isSkipSyncModelChangeUpdate } = { isSkipSyncModelChangeUpdate: false },
-  ): void {
-    const globalConfig = completeState[CONFIG_FEATURE_NAME];
-    this._persistenceService.globalConfig.saveState(globalConfig, {
-      isSyncModelChange: !isSkipSyncModelChangeUpdate,
-    });
-  }
 }

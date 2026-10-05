@@ -1,14 +1,18 @@
+@use '../mixins/_scroll';
+
 .markdown-preview,
 .markdown {
-  @include scrollY;
-  word-wrap: break-word;
-  word-break: break-word;
-  overflow-wrap: break-word;
+  @include scroll.scrollY;
+  overflow-wrap: anywhere;
   hyphens: auto;
 
   *:first-child {
     margin-top: 0;
     padding-top: 0;
+  }
+
+  > *:last-child {
+    margin-bottom: 0;
   }
 
   img {
@@ -17,20 +21,29 @@
     display: block;
   }
 
-  ul {
-    margin: 0 $s;
-    padding-left: $s * 2;
+  table {
+    margin-bottom: var(--s2);
+  }
+
+  ul,
+  ol {
+    margin: 0 var(--s) var(--s2);
+    padding-left: var(--s2);
     padding-inline-start: 20px;
   }
 
   > ul {
-    padding-left: $s * 2;
+    padding-left: var(--s2);
   }
 
-  ul ul {
+  ul ul,
+  ul ol,
+  ol ul,
+  ol ol {
+    margin-bottom: 0;
     padding-top: 0;
-    padding-left: $s * 2;
-    padding-inline-start: $s * 2;
+    padding-left: var(--s2);
+    padding-inline-start: var(--s2);
   }
 
   h1,
@@ -48,8 +61,8 @@
   h3 {
     &,
     .mat-typography & {
-      margin-bottom: $s;
-      margin-top: $s * 2;
+      margin-bottom: var(--s);
+      margin-top: var(--s2);
 
       &:first-child {
         margin-top: 0;
@@ -79,9 +92,10 @@
     }
   }
 
-  input[type='checkbox'] {
-    margin-left: -20px;
-    pointer-events: none;
+  // Hide native checkbox from marked's default checkbox renderer.
+  // The custom .checkbox span (Material Icons) handles all checkbox rendering.
+  .checkbox-wrapper > input[type='checkbox'] {
+    display: none;
   }
 
   .checkbox {
@@ -92,11 +106,46 @@
     text-align: center;
     margin-left: -28px;
     vertical-align: middle;
-    margin-right: $s;
+    padding-right: var(--s);
+    position: relative;
+    cursor: pointer;
+
+    &:after {
+      content: '';
+      position: absolute;
+      top: -4px;
+      right: -12px;
+      left: -12px;
+      bottom: -4px;
+    }
   }
 
   .checkbox-wrapper {
+    display: block;
     list-style: none;
-    margin-bottom: $s;
+    padding-bottom: var(--s);
+
+    &.done {
+      opacity: 0.6;
+      text-decoration: line-through;
+    }
+  }
+
+  // Only the checkbox icon and this text label toggle the item; the empty rest
+  // of the row is not interactive (see clickPreview).
+  .checkbox-label {
+    cursor: pointer;
+  }
+
+  // A markdown link with a disallowed URL scheme, or an image with an unsafe
+  // (remote file:// / UNC) src, renders as inert text instead of an anchor/img
+  // (security: GHSA-hr87-735w-hfq3, see marked-options-factory.ts). Style it as
+  // muted, non-interactive text with a help cursor so blocked content reads as
+  // intentionally disabled, not body copy (the title attribute explains why on
+  // hover).
+  .markdown-blocked-link {
+    color: var(--text-color-muted);
+    text-decoration: underline dotted;
+    cursor: help;
   }
 }

@@ -1,70 +1,67 @@
-import {
-  ConfigFormSection,
-  GenericConfigFormSection,
-} from '../config/global-config.model';
+import { ConfigFormSection } from '../config/global-config.model';
 import { T } from '../../t.const';
 import { Project } from './project.model';
 
-export const BASIC_PROJECT_CONFIG_FORM_CONFIG: ConfigFormSection<Project> = {
-  title: T.F.PROJECT.FORM_BASIC.TITLE,
-  key: 'basic',
-  items: [
-    {
-      key: 'title',
-      type: 'input',
-      templateOptions: {
-        required: true,
-        label: T.F.PROJECT.FORM_BASIC.L_TITLE,
-      },
-    },
-    {
-      key: 'isEnableBacklog',
-      type: 'checkbox',
-      templateOptions: {
-        label: T.F.PROJECT.FORM_BASIC.L_ENABLE_BACKLOG,
-      },
-    },
-    {
-      key: 'isHiddenFromMenu',
-      type: 'checkbox',
-      templateOptions: {
-        label: T.F.PROJECT.FORM_BASIC.L_IS_HIDDEN_FROM_MENU,
-      },
-    },
-  ],
-};
+// The create-project form carries one transient field beyond the Project model:
+// `isShareOnPlainspace` (read on submit, then stripped — never persisted). Typing
+// the section with it keeps the field key type-safe instead of an `as any` cast.
+export type CreateProjectFormModel = Project & { isShareOnPlainspace?: boolean };
 
-export const CREATE_PROJECT_BASIC_CONFIG_FORM_CONFIG: GenericConfigFormSection = {
-  // TODO translate
-  title: 'Project Settings & Theme',
-  key: 'basic',
-  /* eslint-disable */
-  help: `Very basic settings for your project.`,
-  /* eslint-enable */
-  items: [
-    {
-      key: 'title',
-      type: 'input',
-      templateOptions: {
-        required: true,
-        label: T.F.PROJECT.FORM_BASIC.L_TITLE,
+export const CREATE_PROJECT_BASIC_CONFIG_FORM_CONFIG: ConfigFormSection<CreateProjectFormModel> =
+  {
+    // TODO translate
+    title: 'Project Settings & Theme',
+    key: 'basic',
+
+    help: `Very basic settings for your project.`,
+
+    items: [
+      {
+        key: 'title',
+        type: 'input',
+        templateOptions: {
+          required: true,
+          label: T.F.PROJECT.FORM_BASIC.L_TITLE,
+        },
       },
-    },
-    {
-      key: 'theme.primary',
-      type: 'input',
-      templateOptions: {
-        label: T.F.PROJECT.FORM_THEME.L_THEME_COLOR,
+      {
+        key: 'theme.primary' as any,
         type: 'color',
+        templateOptions: {
+          label: T.F.PROJECT.FORM_THEME.L_THEME_COLOR,
+        },
       },
-    },
-    {
-      key: 'isBacklogDisabled',
-      type: 'checkbox',
-      defaultValue: false,
-      templateOptions: {
-        label: T.F.PROJECT.FORM_BASIC.L_ENABLE_BACKLOG,
+      {
+        key: 'icon',
+        type: 'icon',
+        templateOptions: {
+          label: T.F.TAG.FORM_BASIC.L_ICON,
+          description: T.G.ICON_INP_DESCRIPTION,
+        },
       },
-    },
-  ],
-};
+      {
+        // Transient form-only field (not persisted on the Project). When checked
+        // on create, the dialog provisions a Plainspace space + bound issue
+        // provider — see dialogs/create-project/dialog-create-project.component.ts
+        // for the submit flow that reads and strips this flag.
+        // Create-only: editing an existing project (model has an id) can't
+        // provision sharing here, so hide it rather than show a dead control.
+        key: 'isShareOnPlainspace',
+        type: 'checkbox',
+        defaultValue: false,
+        hideExpression: '!!model.id',
+        templateOptions: {
+          label: T.PLAINSPACE.SHARE_LABEL,
+          description: T.PLAINSPACE.SHARE_DESCRIPTION,
+        },
+      },
+      {
+        key: 'isEnableBacklog',
+        type: 'checkbox',
+        defaultValue: false,
+        templateOptions: {
+          label: T.F.PROJECT.FORM_BASIC.L_ENABLE_BACKLOG,
+        },
+      },
+    ],
+  };

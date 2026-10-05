@@ -2,6 +2,7 @@ import { WorkContextCommon, WorkContextThemeCfg } from './work-context.model';
 import { WorklogExportSettings, WorklogGrouping } from '../worklog/worklog.model';
 import { ConfigFormSection } from '../config/global-config.model';
 import { T } from '../../t.const';
+import { FormlyFieldConfig } from '@ngx-formly/core';
 
 export const WORKLOG_EXPORT_DEFAULTS: WorklogExportSettings = {
   cols: ['DATE', 'START', 'END', 'TIME_CLOCK', 'TITLES_INCLUDING_SUB'],
@@ -15,18 +16,24 @@ export const WORKLOG_EXPORT_DEFAULTS: WorklogExportSettings = {
 export const DEFAULT_PROJECT_COLOR = '#29a1aa';
 export const DEFAULT_TAG_COLOR = '#a05db1';
 export const DEFAULT_TODAY_TAG_COLOR = '#6495ED';
+export const DEFAULT_BACKGROUND_IMAGE_BLUR = 0;
+export const MAX_BACKGROUND_IMAGE_BLUR = 20;
+export const DEFAULT_BACKGROUND_OVERLAY_OPACITY = 20;
 
 export const WORK_CONTEXT_DEFAULT_THEME: WorkContextThemeCfg = {
   isAutoContrast: true,
-  isDisableBackgroundGradient: false,
+  isDisableBackgroundTint: false,
   primary: DEFAULT_TAG_COLOR,
   huePrimary: '500',
   accent: '#ff4081',
+  // accent: 'rgb(180,14,225)',
   hueAccent: '500',
   warn: '#e11826',
   hueWarn: '500',
   backgroundImageDark: null,
   backgroundImageLight: null,
+  backgroundOverlayOpacity: 20,
+  backgroundImageBlur: DEFAULT_BACKGROUND_IMAGE_BLUR,
 };
 
 export const WORK_CONTEXT_DEFAULT_COMMON: WorkContextCommon = {
@@ -34,10 +41,12 @@ export const WORK_CONTEXT_DEFAULT_COMMON: WorkContextCommon = {
     worklogExportSettings: WORKLOG_EXPORT_DEFAULTS,
   },
   theme: WORK_CONTEXT_DEFAULT_THEME,
-  workStart: {},
-  workEnd: {},
-  breakTime: {},
-  breakNr: {},
+  // breakTime: {},
+  // breakNr: {},
+  taskIds: [],
+  icon: null,
+  id: '',
+  title: '',
 };
 
 export const HUES = [
@@ -53,6 +62,34 @@ export const HUES = [
   { value: '900', label: '900' },
 ];
 
+// A cleared image picker stores '' rather than null, so treat empty/whitespace
+// strings as "no image set".
+export const isBackgroundImageSet = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0;
+
+export const hasAnyBackgroundImage = (model: unknown): boolean =>
+  typeof model === 'object' &&
+  model !== null &&
+  (isBackgroundImageSet((model as WorkContextThemeCfg).backgroundImageDark) ||
+    isBackgroundImageSet((model as WorkContextThemeCfg).backgroundImageLight));
+
+export const hasAllBackgroundImages = (model: unknown): boolean =>
+  typeof model === 'object' &&
+  model !== null &&
+  isBackgroundImageSet((model as WorkContextThemeCfg).backgroundImageDark) &&
+  isBackgroundImageSet((model as WorkContextThemeCfg).backgroundImageLight);
+
+export const normalizeBackgroundImageBlur = (value: unknown): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_BACKGROUND_IMAGE_BLUR;
+  }
+
+  return Math.min(
+    MAX_BACKGROUND_IMAGE_BLUR,
+    Math.max(DEFAULT_BACKGROUND_IMAGE_BLUR, value),
+  );
+};
+
 export const WORK_CONTEXT_THEME_CONFIG_FORM_CONFIG: ConfigFormSection<WorkContextThemeCfg> =
   {
     title: T.F.PROJECT.FORM_THEME.TITLE,
@@ -61,26 +98,23 @@ export const WORK_CONTEXT_THEME_CONFIG_FORM_CONFIG: ConfigFormSection<WorkContex
     items: [
       {
         key: 'primary',
-        type: 'input',
+        type: 'color',
         templateOptions: {
           label: T.F.PROJECT.FORM_THEME.L_COLOR_PRIMARY,
-          type: 'color',
         },
       },
       {
         key: 'accent',
-        type: 'input',
+        type: 'color',
         templateOptions: {
           label: T.F.PROJECT.FORM_THEME.L_COLOR_ACCENT,
-          type: 'color',
         },
       },
       {
         key: 'warn',
-        type: 'input',
+        type: 'color',
         templateOptions: {
           label: T.F.PROJECT.FORM_THEME.L_COLOR_WARN,
-          type: 'color',
         },
       },
       {
@@ -130,26 +164,72 @@ export const WORK_CONTEXT_THEME_CONFIG_FORM_CONFIG: ConfigFormSection<WorkContex
         },
       },
       {
-        key: 'isDisableBackgroundGradient',
+        key: 'isDisableBackgroundTint',
         type: 'checkbox',
+        expressions: {
+          hide: (fCfg: FormlyFieldConfig) => hasAllBackgroundImages(fCfg.model),
+        },
         templateOptions: {
-          label: T.F.PROJECT.FORM_THEME.L_IS_DISABLE_BACKGROUND_GRADIENT,
+          label: T.F.PROJECT.FORM_THEME.L_IS_DISABLE_BACKGROUND_TINT,
         },
       },
       {
         key: 'backgroundImageDark',
-        type: 'input',
+        type: 'image-input',
         templateOptions: {
           label: T.F.PROJECT.FORM_THEME.L_BACKGROUND_IMAGE_DARK,
-          description: '* https://some/cool.jpg, file:///home/user/bg.png',
+          description: '* https://some/cool.jpg',
         },
       },
       {
         key: 'backgroundImageLight',
-        type: 'input',
+        type: 'image-input',
         templateOptions: {
           label: T.F.PROJECT.FORM_THEME.L_BACKGROUND_IMAGE_LIGHT,
-          description: '* https://some/cool.jpg, file:///home/user/bg.png',
+          description: '* https://some/cool.jpg',
+        },
+      },
+      {
+        key: 'backgroundOverlayOpacity',
+        type: 'slider',
+        // Keep the value while the slider is hidden (no background image set).
+        // Formly's default `resetFieldOnHide` would otherwise wipe it to
+        // `undefined`, so removing and re-adding an image reset the slider to
+        // 0% instead of the configured value. See #8504.
+        resetOnHide: false,
+        props: {
+          label: T.F.PROJECT.FORM_THEME.L_BACKGROUND_OVERLAY_OPACITY,
+          description: T.F.PROJECT.FORM_THEME.D_BACKGROUND_OVERLAY_OPACITY,
+          type: 'number',
+          min: 0,
+          max: 99,
+          required: false,
+          displayWith: (value: number): string => `${value}%`,
+        },
+        expressions: {
+          hide: (field: FormlyFieldConfig): boolean => {
+            return !hasAnyBackgroundImage(field.model);
+          },
+        },
+      },
+      {
+        key: 'backgroundImageBlur',
+        type: 'slider',
+        // See backgroundOverlayOpacity above (#8504).
+        resetOnHide: false,
+        props: {
+          label: T.F.PROJECT.FORM_THEME.L_BACKGROUND_IMAGE_BLUR,
+          description: T.F.PROJECT.FORM_THEME.D_BACKGROUND_IMAGE_BLUR,
+          type: 'number',
+          min: 0,
+          max: MAX_BACKGROUND_IMAGE_BLUR,
+          required: false,
+          displayWith: (value: number): string => `${value}px`,
+        },
+        expressions: {
+          hide: (field: FormlyFieldConfig): boolean => {
+            return !hasAnyBackgroundImage(field.model);
+          },
         },
       },
     ],

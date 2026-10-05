@@ -18,14 +18,13 @@
     top: -5px;
     left: 2px;
     right: 2px;
-    border-radius: 4px;
+    border-radius: var(--card-border-radius);
   }
 
   //margin-bottom: -2px;
 
-  //@include darkTheme {
-  //  background-color: #999999;
-  //}
+  ////  background-color: #999999;
+  //
 
   //&:after {
   //  content: '';

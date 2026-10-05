@@ -1,18 +1,48 @@
-@import '../../../../variables';
+@use '../../../../styles/_globals.scss' as *;
 
 :host {
   position: fixed;
-  z-index: $z-focus-mode-overlay;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  left: 0;
+  z-index: var(--z-focus-mode-overlay);
+  inset: 0;
   display: flex;
   flex-direction: column;
   height: 100%;
+  -webkit-app-region: no-drag !important;
+  // Push all content below the system status bar / nav bar on native mobile.
+  // Fixed-position overlays bypass body safe-area padding, so we handle it here.
+  padding-top: var(--safe-area-top);
+  padding-bottom: var(--safe-area-bottom);
+  --z-focus-mode-drag-bar: 0;
+  --z-focus-mode-close-btn: 5;
+  --z-focus-mode-overlay-selector: 10;
+  --z-focus-mode-main-selector: 2;
+  --z-focus-mode-duration-slider: 2;
+  --z-focus-mode-simple-counter: 1;
+  --z-focus-mode-drag-over: 31;
+  --z-focus-mode-hide-notes: 2;
+  --z-focus-mode-countdown: 11;
 }
 
-header {
+.electron-drag-bar {
+  -webkit-app-region: drag;
+  height: 50px;
+  width: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: var(--z-focus-mode-drag-bar);
+  display: none;
+
+  :host-context(.isElectron) & {
+    display: block;
+  }
+}
+
+.focus-mode-dialog {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
 }
 
 main {
@@ -33,17 +63,29 @@ main {
 
 .close-btn {
   position: absolute;
-  top: $s;
-  right: $s;
+  top: var(--s);
+  right: calc(var(--s) + var(--safe-area-right));
   width: 56px;
   height: 56px;
-  z-index: 3;
+  z-index: var(--z-focus-mode-close-btn);
   @include mousePrimaryDevice {
-    visibility: hidden;
+    transition: opacity var(--transition-leave);
+    //visibility: hidden;
+    opacity: 0;
+
+    &:focus {
+      opacity: 1;
+    }
   }
 
   :host:hover & {
-    visibility: visible;
+    transition: opacity var(--transition-enter);
+    //visibility: visible;
+    opacity: 1;
+  }
+
+  :host-context(.isObsidianStyleHeader.isElectron.isNoMac) & {
+    top: calc(var(--s) + 40px);
   }
 
   mat-icon {
@@ -56,13 +98,25 @@ main {
 .pomodoro-info-wrapper {
   text-align: center;
   max-width: 500px;
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+  @include center;
 }
 
 .pomodoro-info-msg {
   font-size: 20px;
-  margin-bottom: 16px;
+  margin-bottom: var(--s2);
+}
+
+.focus-mode-select-mode {
+  position: absolute;
+  top: var(--s3);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(100%, 560px);
+  z-index: var(--z-focus-mode-overlay-selector);
+}
+
+focus-mode-task-selection,
+focus-mode-duration-selection {
+  margin-bottom: auto;
+  margin-top: -32px;
 }

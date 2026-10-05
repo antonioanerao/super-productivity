@@ -1,24 +1,19 @@
-/* eslint-disable max-len */
+import { FormlyFieldConfig } from '@ngx-formly/core';
 import {
   ConfigFormSection,
   LimitedFormlyFieldConfig,
   MiscConfig,
 } from '../global-config.model';
 import { T } from '../../../t.const';
-import { IS_ELECTRON } from '../../../app.constants';
+import { IS_ELECTRON, IS_GNOME_WAYLAND } from '../../../app.constants';
+import { isValidSplitTime } from '../../../util/is-valid-split-time';
+import { isUpdateCheckPossible } from '../../../core/update-check/is-update-check-possible.util';
 
 export const MISC_SETTINGS_FORM_CFG: ConfigFormSection<MiscConfig> = {
   title: T.GCF.MISC.TITLE,
   key: 'misc',
   help: T.GCF.MISC.HELP,
   items: [
-    // {
-    //   key: 'isDarkMode',
-    //   type: 'checkbox',
-    //   templateOptions: {
-    //     label: T.GCF.MISC.IS_DARK_MODE,
-    //   },
-    // },
     ...((IS_ELECTRON
       ? [
           {
@@ -39,96 +34,77 @@ export const MISC_SETTINGS_FORM_CFG: ConfigFormSection<MiscConfig> = {
           },
         ]) as LimitedFormlyFieldConfig<MiscConfig>[]),
     {
-      key: 'isNotifyWhenTimeEstimateExceeded',
-      type: 'checkbox',
-      templateOptions: {
-        label: T.GCF.MISC.IS_NOTIFY_WHEN_TIME_ESTIMATE_EXCEEDED,
-      },
-    },
-    {
-      key: 'isAutMarkParentAsDone',
-      type: 'checkbox',
-      templateOptions: {
-        label: T.GCF.MISC.IS_AUTO_MARK_PARENT_AS_DONE,
-      },
-    },
-    {
-      key: 'isAutoStartNextTask',
-      type: 'checkbox',
-      templateOptions: {
-        label: T.GCF.MISC.IS_AUTO_START_NEXT_TASK,
-      },
-    },
-    {
-      key: 'isTurnOffMarkdown',
-      type: 'checkbox',
-      templateOptions: {
-        label: T.GCF.MISC.IS_TURN_OFF_MARKDOWN,
-      },
-    },
-    {
-      key: 'isAutoAddWorkedOnToToday',
-      type: 'checkbox',
-      templateOptions: {
-        label: T.GCF.MISC.IS_AUTO_ADD_WORKED_ON_TO_TODAY,
-      },
-    },
-    {
       key: 'isMinimizeToTray',
       type: 'checkbox',
       templateOptions: {
         label: T.GCF.MISC.IS_MINIMIZE_TO_TRAY,
       },
     },
+    ...((IS_ELECTRON
+      ? [
+          {
+            key: 'isLocalRestApiEnabled',
+            type: 'checkbox',
+            templateOptions: {
+              label: T.GCF.MISC.IS_LOCAL_REST_API_ENABLED,
+              description: T.GCF.MISC.IS_LOCAL_REST_API_ENABLED_HINT,
+            },
+          },
+          {
+            type: 'tpl',
+            expressions: {
+              hide: (fCfg: FormlyFieldConfig) => !fCfg.model.isLocalRestApiEnabled,
+            },
+            templateOptions: {
+              tag: 'h3',
+              text: T.GCF.MISC.LOCAL_REST_API_TOKEN,
+              class: 'sub-section-heading',
+            },
+          },
+          {
+            // Keyless: the token is owned by the Electron main process and read
+            // over IPC, never stored in the synced misc config.
+            type: 'local-rest-api-token',
+            expressions: {
+              hide: (fCfg: FormlyFieldConfig) => !fCfg.model.isLocalRestApiEnabled,
+            },
+          },
+        ]
+      : []) as LimitedFormlyFieldConfig<MiscConfig>[]),
+    // Hidden on channels that self-update (store/snap builds); the value still
+    // syncs like the rest of misc config, it just has no effect there.
+    ...((isUpdateCheckPossible()
+      ? [
+          {
+            key: 'isCheckForUpdates',
+            type: 'checkbox',
+            // Display-only seed for the paths where the key can still be absent
+            // (pre-hydration initial state, partial section updates) — hydration
+            // itself per-key-merges DEFAULT_GLOBAL_CONFIG.misc in the reducer.
+            // UpdateCheckService treats missing as ON, so the checkbox must show
+            // checked. Same pattern + #7891 residual as isUseCustomWindowTitleBar.
+            defaultValue: true,
+            templateOptions: {
+              label: T.GCF.MISC.IS_CHECK_FOR_UPDATES,
+              description: T.GCF.MISC.IS_CHECK_FOR_UPDATES_HINT,
+            },
+          },
+        ]
+      : []) as LimitedFormlyFieldConfig<MiscConfig>[]),
     {
-      key: 'isTrayShowCurrentTask',
-      type: 'checkbox',
-      templateOptions: {
-        label: T.GCF.MISC.IS_TRAY_SHOW_CURRENT_TASK,
-      },
-    },
-    {
-      key: 'defaultProjectId',
-      type: 'project-select',
-      templateOptions: {
-        label: T.GCF.MISC.DEFAULT_PROJECT,
-      },
-    },
-    {
-      key: 'firstDayOfWeek',
-      type: 'select',
-      templateOptions: {
-        label: T.GCF.MISC.FIRST_DAY_OF_WEEK,
-        options: [
-          { label: T.F.TASK_REPEAT.F.SUNDAY, value: 0 },
-          { label: T.F.TASK_REPEAT.F.MONDAY, value: 1 },
-          { label: T.F.TASK_REPEAT.F.TUESDAY, value: 2 },
-          { label: T.F.TASK_REPEAT.F.WEDNESDAY, value: 3 },
-          { label: T.F.TASK_REPEAT.F.THURSDAY, value: 4 },
-          { label: T.F.TASK_REPEAT.F.FRIDAY, value: 5 },
-          { label: T.F.TASK_REPEAT.F.SATURDAY, value: 6 },
-        ],
-      },
-    },
-    {
-      key: 'startOfNextDay',
-      type: 'input',
-      defaultValue: 0,
+      key: 'startOfNextDayTime',
+      type: 'time',
+      defaultValue: '00:00',
       templateOptions: {
         required: true,
         label: T.GCF.MISC.START_OF_NEXT_DAY,
         description: T.GCF.MISC.START_OF_NEXT_DAY_HINT,
-        type: 'number',
-        min: 0,
-        max: 23,
       },
-    },
-    {
-      key: 'taskNotesTpl',
-      type: 'textarea',
-      templateOptions: {
-        rows: 5,
-        label: T.GCF.MISC.TASK_NOTES_TPL,
+      // Guard against a corrupt/legacy stored value (e.g. from an import): a
+      // truthy-but-invalid time would otherwise display blank yet pass silently.
+      // Mirrors the work-time fields in schedule-form.const.ts.
+      validators: {
+        validTimeString: (c: { value: string | undefined }) => isValidSplitTime(c.value),
       },
     },
     {
@@ -136,6 +112,67 @@ export const MISC_SETTINGS_FORM_CFG: ConfigFormSection<MiscConfig> = {
       type: 'checkbox',
       templateOptions: {
         label: T.GCF.MISC.IS_DISABLE_ANIMATIONS,
+      },
+    },
+    {
+      key: 'isVerticalActionBar',
+      type: 'checkbox',
+      templateOptions: {
+        label: T.GCF.MISC.IS_VERTICAL_ACTION_BAR,
+        description: T.GCF.MISC.IS_VERTICAL_ACTION_BAR_HINT,
+      },
+    },
+    {
+      key: 'isDisableCelebration',
+      type: 'checkbox',
+      templateOptions: {
+        label: T.GCF.MISC.IS_DISABLE_CELEBRATION,
+      },
+    },
+    {
+      key: 'isShowProductivityTipLonger',
+      type: 'checkbox',
+      templateOptions: {
+        label: T.GCF.MISC.IS_SHOW_TIP_LONGER,
+      },
+    },
+    {
+      key: 'isTrayShowCurrentCountdown',
+      type: 'checkbox',
+      templateOptions: {
+        label: T.GCF.MISC.IS_TRAY_SHOW_CURRENT_COUNTDOWN,
+      },
+    },
+    ...((IS_ELECTRON && !IS_GNOME_WAYLAND
+      ? [
+          {
+            key: 'isUseCustomWindowTitleBar',
+            type: 'checkbox',
+            // Display-only default: seed the checkbox so it reflects the actual
+            // window state on a fresh install (the custom title bar is on by
+            // default here -- this field is hidden only on GNOME+Wayland, where the
+            // main process force-disables it, see the enclosing guard). formly seeds
+            // the control without an initial modelChange, so nothing is persisted on load.
+            // KNOWN RESIDUAL (#7891): saving any *other* Misc setting emits the
+            // whole model and persists this seeded value too. We accept that over a
+            // persisted DEFAULT_GLOBAL_CONFIG default, which would be pushed to
+            // Electron on *every* launch and override a legacy `isUseObsidianStyleHeader`
+            // choice. So a pre-2025-12 user who had disabled the old
+            // header may see it re-enabled after editing Misc settings (reversible here).
+            defaultValue: true,
+            templateOptions: {
+              label: T.GCF.MISC.IS_USE_CUSTOM_WINDOW_TITLE_BAR,
+              description: T.GCF.MISC.IS_USE_CUSTOM_WINDOW_TITLE_BAR_HINT,
+            },
+          },
+        ]
+      : []) as LimitedFormlyFieldConfig<MiscConfig>[]),
+    {
+      key: 'defaultStartPage',
+      type: 'start-page-select',
+      defaultValue: 0,
+      templateOptions: {
+        label: T.GCF.MISC.DEFAULT_START_PAGE,
       },
     },
   ],

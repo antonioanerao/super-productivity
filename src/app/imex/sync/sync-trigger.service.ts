@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core';
+import { inject, Injectable } from '@angular/core';
 import { EMPTY, fromEvent, merge, Observable, of, ReplaySubject, timer } from 'rxjs';
 import {
   auditTime,
@@ -6,6 +6,7 @@ import {
   debounceTime,
   distinctUntilChanged,
   filter,
+  first,
   map,
   mapTo,
   shareReplay,
@@ -17,14 +18,12 @@ import {
   throttleTime,
 } from 'rxjs/operators';
 import { GlobalConfigService } from '../../features/config/global-config.service';
-import { DataInitService } from '../../core/data-init/data-init.service';
 import { isOnline$ } from '../../util/is-online';
-import { PersistenceService } from '../../core/persistence/persistence.service';
 import {
   SYNC_BEFORE_GOING_TO_SLEEP_THROTTLE_TIME,
   SYNC_DEFAULT_AUDIT_TIME,
+  SYNC_MIN_INTERVAL,
 } from './sync.const';
-import { AllowedDBKeys } from '../../core/persistence/storage-keys.const';
 import { IdleService } from '../../features/idle/idle.service';
 import { IS_ELECTRON } from '../../app.constants';
 import { GlobalConfigState } from '../../features/config/global-config.model';
@@ -32,26 +31,57 @@ import { IS_ANDROID_WEB_VIEW } from '../../util/is-android-web-view';
 import { androidInterface } from '../../features/android/android-interface';
 import { ipcResume$, ipcSuspend$ } from '../../core/ipc-events';
 import { IS_TOUCH_PRIMARY } from '../../util/is-mouse-primary';
+import { DataInitStateService } from '../../core/data-init/data-init-state.service';
+import { SyncLog } from '../../core/log';
+import { HydrationStateService } from '../../op-log/apply/hydration-state.service';
+import { SyncWrapperService } from './sync-wrapper.service';
+import { SyncProviderId } from '../../op-log/sync-exports';
 
-const MAX_WAIT_FOR_INITIAL_SYNC = 25000;
-const USER_INTERACTION_SYNC_CHECK_THROTTLE_TIME = 15 * 60 * 10000;
+const MAX_WAIT_FOR_INITIAL_SYNC = 8000;
+/** 15 minutes in milliseconds - throttle time for user activity sync checks */
+const USER_ACTIVITY_SYNC_THROTTLE_TIME = 15 * 60 * 1000;
 
-// TODO naming
 @Injectable({
   providedIn: 'root',
 })
 export class SyncTriggerService {
-  private _onUpdateLocalDataTrigger$: Observable<{
-    appDataKey: AllowedDBKeys;
-    data: any;
-    isDataImport: boolean;
-    projectId?: string;
-  }> = this._persistenceService.onAfterSave$.pipe(
-    filter(
-      ({ appDataKey, data, isDataImport, isSyncModelChange }) =>
-        !!data && !isDataImport && isSyncModelChange,
-    ),
-  );
+  private readonly _globalConfigService = inject(GlobalConfigService);
+  private readonly _dataInitStateService = inject(DataInitStateService);
+  private readonly _idleService = inject(IdleService);
+  private readonly _syncWrapperService = inject(SyncWrapperService);
+  private readonly _hydrationState = inject(HydrationStateService);
+
+  constructor() {
+    // When sync is disabled, set initialSyncDone immediately so UI shows
+    // and day-change effects can run without waiting for a sync that will never happen.
+    this._isInitialSyncEnabled$.pipe(first()).subscribe((isActive) => {
+      if (!isActive) {
+        this.setInitialSyncDone(true);
+      }
+    });
+
+    // Open the sync window directly on every resume source, bypassing the
+    // gated `getSyncTrigger$()` chain (which is only subscribed once
+    // dataInitState + config are ready). This handles the cold-start edge
+    // case where a resume arrives before the trigger pipeline is wired.
+    // The failsafe in `openSyncWindow()` cleans up if no sync follows.
+    if (IS_ANDROID_WEB_VIEW) {
+      androidInterface.onResume$.subscribe(() => this._hydrationState.openSyncWindow());
+    }
+    if (IS_ELECTRON) {
+      ipcResume$.subscribe(() => this._hydrationState.openSyncWindow());
+    }
+    // Open synchronously on visibilitychange — bridged onResume$ on Android
+    // arrives ~100ms later, after the DAY_CHANGE → TODAY_TAG repair cascade.
+    fromEvent(document, 'visibilitychange')
+      .pipe(filter(() => document.visibilityState === 'visible'))
+      .subscribe(() => this._hydrationState.openSyncWindow());
+  }
+
+  // Note: This was previously connected to PFAPI's onLocalMetaUpdate$, which was a no-op.
+  // For file-based sync, this doesn't matter as sync is immediate-upload based.
+  // For SuperSync, operations are uploaded immediately via ImmediateUploadService.
+  private _onUpdateLocalDataTrigger$: Observable<unknown> = of(null);
 
   // IMMEDIATE TRIGGERS
   // ----------------------
@@ -75,19 +105,18 @@ export class SyncTriggerService {
             ),
           )
         : // FALLBACK we check if there was any kind of user interaction
-        // (otherwise sync might never be checked if there are no local data changes)
-        IS_TOUCH_PRIMARY
-        ? merge(
-            fromEvent(window, 'touchstart'),
-            fromEvent(window, 'visibilitychange'),
-          ).pipe(
-            mapTo('I_MOUSE_TOUCH_MOVE_OR_VISIBILITYCHANGE'),
-            throttleTime(USER_INTERACTION_SYNC_CHECK_THROTTLE_TIME),
-          )
-        : fromEvent(window, 'focus').pipe(
-            mapTo('I_FOCUS_THROTTLED'),
-            throttleTime(USER_INTERACTION_SYNC_CHECK_THROTTLE_TIME),
-          ),
+          // (otherwise sync might never be checked if there are no local data changes)
+          // NOTE: visibilitychange is handled separately by _visibilityHiddenTrigger$ —
+          // not throttled, so backgrounding always attempts a sync.
+          IS_TOUCH_PRIMARY
+          ? fromEvent(window, 'touchstart').pipe(
+              mapTo('I_TOUCH_ACTIVITY'),
+              throttleTime(USER_ACTIVITY_SYNC_THROTTLE_TIME),
+            )
+          : fromEvent(window, 'focus').pipe(
+              mapTo('I_FOCUS_THROTTLED'),
+              throttleTime(USER_ACTIVITY_SYNC_THROTTLE_TIME),
+            ),
     ),
   );
 
@@ -101,7 +130,6 @@ export class SyncTriggerService {
     ),
   );
 
-  // TODO check if those two work as expected
   private _onElectronResumeTrigger$: Observable<string | never> = IS_ELECTRON
     ? ipcResume$.pipe(
         // because ipcEvents live forever
@@ -123,10 +151,20 @@ export class SyncTriggerService {
     mapTo('I_IS_ONLINE'),
   );
 
+  // Fires when the page becomes hidden (tab switch, app backgrounding, close).
+  // Not throttled — a "last chance before close" trigger should always attempt a sync.
+  // Electron uses execBeforeCloseService (IPC-level blocking close) instead.
+  private _visibilityHiddenTrigger$: Observable<string | never> = !IS_ELECTRON
+    ? fromEvent(document, 'visibilitychange').pipe(
+        filter(() => document.visibilityState === 'hidden'),
+        mapTo('I_VISIBILITY_HIDDEN'),
+      )
+    : EMPTY;
+
   // OTHER INITIAL SYNC STUFF
   // ------------------------
   private _isInitialSyncEnabled$: Observable<boolean> =
-    this._dataInitService.isAllDataLoadedInitially$.pipe(
+    this._dataInitStateService.isAllDataLoadedInitially$.pipe(
       switchMap(() => this._globalConfigService.cfg$),
       map((cfg: GlobalConfigState) => cfg.sync.isEnabled),
       distinctUntilChanged(),
@@ -136,9 +174,22 @@ export class SyncTriggerService {
   private _isInitialSyncDoneManual$: ReplaySubject<boolean> = new ReplaySubject<boolean>(
     1,
   );
+  private _isInitialSyncDoneSync = false;
+
   private _isInitialSyncDone$: Observable<boolean> = this._isInitialSyncEnabled$.pipe(
     switchMap((isActive) => {
-      return isActive ? this._isInitialSyncDoneManual$.asObservable() : of(true);
+      if (!isActive) {
+        return of(true);
+      }
+      // SuperSync has data locally - no need to wait for initial sync for UI display
+      return this._syncWrapperService.syncProviderId$.pipe(
+        take(1),
+        switchMap((providerId) =>
+          providerId === SyncProviderId.SuperSync
+            ? of(true)
+            : this._isInitialSyncDoneManual$.asObservable(),
+        ),
+      );
     }),
   );
   private _afterInitialSyncDoneAndDataLoadedInitially$: Observable<boolean> =
@@ -146,24 +197,46 @@ export class SyncTriggerService {
       filter((isDone) => isDone),
       take(1),
       // should normally be already loaded, but if there is NO initial sync we need to wait here
-      concatMap(() => this._dataInitService.isAllDataLoadedInitially$),
+      concatMap(() => this._dataInitStateService.isAllDataLoadedInitially$),
     );
 
+  // NOTE: can be called multiple times apparently
   afterInitialSyncDoneAndDataLoadedInitially$: Observable<boolean> = merge(
     this._afterInitialSyncDoneAndDataLoadedInitially$,
-    timer(MAX_WAIT_FOR_INITIAL_SYNC).pipe(mapTo(true)).pipe(shareReplay(1)),
-  );
+    timer(MAX_WAIT_FOR_INITIAL_SYNC).pipe(
+      tap(() => this.setInitialSyncDone(true)),
+      mapTo(true),
+    ),
+  ).pipe(first(), shareReplay(1));
 
-  constructor(
-    private readonly _globalConfigService: GlobalConfigService,
-    private readonly _dataInitService: DataInitService,
-    private readonly _idleService: IdleService,
-    private readonly _persistenceService: PersistenceService,
-  ) {}
+  /**
+   * Similar to afterInitialSyncDoneAndDataLoadedInitially$, but ALWAYS waits for
+   * the actual initial sync to complete - even for SuperSync.
+   *
+   * Use this for operations that must have fully synchronized data before running,
+   * like repeatable task creation, to prevent duplicate tasks across clients.
+   */
+  afterInitialSyncDoneStrict$: Observable<boolean> = this._isInitialSyncEnabled$.pipe(
+    switchMap((isActive) => {
+      if (!isActive) {
+        return of(true);
+      }
+      return merge(
+        this._isInitialSyncDoneManual$.asObservable().pipe(filter((isDone) => isDone)),
+        timer(MAX_WAIT_FOR_INITIAL_SYNC).pipe(
+          tap(() => this.setInitialSyncDone(true)),
+          mapTo(true),
+        ),
+      ).pipe(first());
+    }),
+    concatMap(() => this._dataInitStateService.isAllDataLoadedInitially$),
+    first(),
+    shareReplay(1),
+  );
 
   getSyncTrigger$(
     syncInterval: number = SYNC_DEFAULT_AUDIT_TIME,
-    minSyncInterval: number = 5000,
+    useIntervalTimer = false,
   ): Observable<unknown> {
     const _immediateSyncTrigger$: Observable<string> = IS_ANDROID_WEB_VIEW
       ? // ANDROID ONLY
@@ -189,11 +262,29 @@ export class SyncTriggerService {
           this._isOnlineTrigger$,
           this._onIdleTrigger$,
           this._onElectronResumeTrigger$,
+          this._visibilityHiddenTrigger$,
+          // Periodic interval timer: fires every syncInterval ms to detect external file
+          // changes (e.g. Syncthing on Linux) even without user activity.
+          // Only for file-based providers — SuperSync uses WebSocket push and doesn't need polling.
+          // Fixes: Linux auto-sync ignoring interval (#4783), Dropbox sync gaps (#7144)
+          ...(useIntervalTimer
+            ? [timer(syncInterval, syncInterval).pipe(mapTo('I_INTERVAL_TIMER'))]
+            : []),
         );
-
     return merge(
       // once immediately
-      _immediateSyncTrigger$.pipe(tap((v) => console.log('immediate sync trigger', v))),
+      _immediateSyncTrigger$.pipe(
+        tap((v) => {
+          // eslint-disable-next-line local-rules/no-user-content-in-logs -- grandfathered log baseline (2026-09), not yet triaged
+          SyncLog.log('immediate sync trigger', v);
+          // Open BEFORE the downstream debounceTime(100) so the resume → DAY_CHANGE
+          // → TODAY_TAG repair cascade (which fires inside that 100ms) sees the
+          // window already open and is suppressed by skipDuringSyncWindow().
+          // Failsafe in openSyncWindow() handles triggers that get debounced/
+          // throttled out before reaching SyncWrapperService.sync().
+          this._hydrationState.openSyncWindow();
+        }),
+      ),
 
       // and once we reset the sync interval for all other triggers
       // we do this to reset the audit time to avoid sync checks in short succession
@@ -204,12 +295,10 @@ export class SyncTriggerService {
         switchMap(() =>
           // NOTE: interval changes are only ever executed, if local data was changed
           this._onUpdateLocalDataTrigger$.pipe(
-            // tap((ev) => console.log('__trigger_sync__', ev.appDataKey, ev)),
-            tap((ev) => console.log('__trigger_sync__', ev.appDataKey)),
-            auditTime(Math.max(syncInterval, minSyncInterval)),
-            // tap((ev) =>
-            //   console.log('__trigger_sync after auditTime__', ev.appDataKey, ev),
-            // ),
+            // tap((ev) => Log.log('__trigger_sync__', ev.appDataKey, ev)),
+            // tap((ev) => Log.log('__trigger_sync__', 'I_ON_UPDATE_LOCAL_DATA', ev)),
+            auditTime(Math.max(syncInterval, SYNC_MIN_INTERVAL)),
+            // tap((ev) => alert('__trigger_sync after auditTime__')),
           ),
         ),
       ),
@@ -217,6 +306,45 @@ export class SyncTriggerService {
   }
 
   setInitialSyncDone(val: boolean): void {
+    this._isInitialSyncDoneSync = val;
     this._isInitialSyncDoneManual$.next(val);
   }
+
+  /**
+   * Synchronous getter for initial sync done state.
+   * Used by operators like skipDuringSyncWindow() that need
+   * to check state synchronously in filter callbacks.
+   */
+  isInitialSyncDoneSync(): boolean {
+    return this._isInitialSyncDoneSync;
+  }
+
+  /**
+   * The initial/after-enable gate as an edge — the exact observable mirror of
+   * {@link isInitialSyncDoneSync}, since `setInitialSyncDone()` is the only
+   * writer of both. For deferred work that must not start before the awaited
+   * initial path has opened the gate, and must be told the moment it does.
+   *
+   * NOT the same thing as the private `_isInitialSyncDone$`, which answers a
+   * different question ("may the UI show data yet?") and short-circuits to true
+   * for SuperSync and when initial sync is disabled.
+   *
+   * Emits on a `setInitialSyncDone()` call: replays the latest value to late
+   * subscribers, and emits nothing at all before the first flip (the gate reads
+   * closed via the getter until then).
+   *
+   * CAVEAT — this does NOT mean "the initial sync completed". The
+   * `MAX_WAIT_FOR_INITIAL_SYNC` (8s) failsafes inside
+   * `afterInitialSyncDoneAndDataLoadedInitially$` and `afterInitialSyncDoneStrict$`
+   * call `setInitialSyncDone(true)` from a `tap`, so a wall-clock timer opens
+   * this gate too — and both are subscribed live across the app, so the timers
+   * really are armed. The honest reading is "the gate is open", not "the initial
+   * sync landed": if the initial path hangs (e.g. the PWA update check, also 8s),
+   * the failsafe can open it first, a deferred background sync drains, and the
+   * later initial `sync()` bounces off `SyncCycleGuard.tryBegin()` and returns
+   * HANDLED_ERROR. Both paths call the same `sync()`, so the practical harm is
+   * low — but do not build a stronger invariant on this than it can carry.
+   */
+  readonly initialSyncGateOpen$: Observable<boolean> =
+    this._isInitialSyncDoneManual$.asObservable();
 }

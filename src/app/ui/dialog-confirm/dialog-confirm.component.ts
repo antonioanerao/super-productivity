@@ -1,22 +1,67 @@
-import { ChangeDetectionStrategy, Component, Inject } from '@angular/core';
-import { MAT_DIALOG_DATA, MatDialogRef } from '@angular/material/dialog';
+import { ChangeDetectionStrategy, Component, inject, viewChild } from '@angular/core';
+import {
+  MAT_DIALOG_DATA,
+  MatDialogActions,
+  MatDialogContent,
+  MatDialogRef,
+  MatDialogTitle,
+} from '@angular/material/dialog';
 import { T } from '../../t.const';
+import { MatButton } from '@angular/material/button';
+import { MatIcon } from '@angular/material/icon';
+import { TranslatePipe } from '@ngx-translate/core';
+import { MatCheckbox } from '@angular/material/checkbox';
+import { FormsModule } from '@angular/forms';
 
 @Component({
   selector: 'dialog-confirm',
   templateUrl: './dialog-confirm.component.html',
   styleUrls: ['./dialog-confirm.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [
+    MatDialogContent,
+    MatDialogActions,
+    MatButton,
+    MatIcon,
+    TranslatePipe,
+    MatDialogTitle,
+    MatCheckbox,
+    FormsModule,
+  ],
 })
 export class DialogConfirmComponent {
-  T: typeof T = T;
+  private readonly _matDialogRef =
+    inject<MatDialogRef<DialogConfirmComponent>>(MatDialogRef);
+  readonly data = inject(MAT_DIALOG_DATA);
 
-  constructor(
-    private _matDialogRef: MatDialogRef<DialogConfirmComponent>,
-    @Inject(MAT_DIALOG_DATA) public data: any,
-  ) {}
+  readonly cancelButton = viewChild<MatButton>('cancelButton');
 
-  close(res: any): void {
-    this._matDialogRef.close(res);
+  readonly T: typeof T = T;
+
+  dontShowAgain = false;
+
+  close(res: boolean | string | undefined): void {
+    if (this.data.showDontShowAgain) {
+      this._matDialogRef.close({
+        confirmed: res,
+        dontShowAgain: this.dontShowAgain,
+      });
+    } else {
+      this._matDialogRef.close(res);
+    }
+  }
+
+  focusNextButton(nextButton: MatButton): void {
+    const buttonElement = nextButton._elementRef.nativeElement;
+    if (buttonElement) {
+      buttonElement.focus();
+    }
+  }
+
+  focusCancelButton(): void {
+    const btn = this.cancelButton();
+    if (btn) {
+      btn._elementRef.nativeElement.focus();
+    }
   }
 }

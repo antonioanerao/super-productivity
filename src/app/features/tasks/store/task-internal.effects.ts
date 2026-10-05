@@ -1,46 +1,57 @@
-import { Injectable } from '@angular/core';
-import { Actions, createEffect, ofType } from '@ngrx/effects';
+import { Injectable, inject } from '@angular/core';
+import { createEffect, ofType } from '@ngrx/effects';
+import { LOCAL_ACTIONS } from '../../../util/local-actions.token';
 import {
-  deleteTask,
-  moveToArchive_,
+  addSubTask,
   setCurrentTask,
   toggleStart,
   unsetCurrentTask,
-  updateTask,
 } from './task.actions';
+import { TaskSharedActions } from '../../../root-store/meta/task-shared.actions';
 import { select, Store } from '@ngrx/store';
 import { filter, map, mergeMap, withLatestFrom } from 'rxjs/operators';
 import { selectTaskFeatureState } from './task.selectors';
-import { selectMiscConfig } from '../../config/store/global-config.reducer';
+import {
+  selectConfigFeatureState,
+  selectTasksConfig,
+} from '../../config/store/global-config.reducer';
 import { Task, TaskState } from '../task.model';
 import { EMPTY, of } from 'rxjs';
 import { WorkContextService } from '../../work-context/work-context.service';
+import { selectTodayTaskIds } from '../../work-context/store/work-context.selectors';
 import {
   moveProjectTaskToBacklogList,
   moveProjectTaskToBacklogListAuto,
 } from '../../project/store/project.actions';
+import { DateService } from '../../../core/date/date.service';
+import { filterOutTodayTag } from '../../../root-store/meta/task-shared-meta-reducers/task-shared-helpers';
+import { fastArrayCompare } from '../../../util/fast-array-compare';
 
 @Injectable()
 export class TaskInternalEffects {
-  onAllSubTasksDone$: any = createEffect(() =>
+  private _actions$ = inject(LOCAL_ACTIONS);
+  private _store$ = inject(Store);
+  private _workContextSession = inject(WorkContextService);
+  private _dateService = inject(DateService);
+
+  onAllSubTasksDone$ = createEffect(() =>
     this._actions$.pipe(
-      ofType(updateTask),
+      ofType(TaskSharedActions.updateTask),
       withLatestFrom(
-        this._store$.pipe(select(selectMiscConfig)),
+        this._store$.pipe(select(selectTasksConfig)),
         this._store$.pipe(select(selectTaskFeatureState)),
       ),
       filter(
-        ([{ task }, miscCfg, state]) =>
-          !!miscCfg &&
-          miscCfg.isAutMarkParentAsDone &&
+        ([{ task }, tasksCfg, state]) =>
+          !!tasksCfg &&
+          tasksCfg.isAutoMarkParentAsDone &&
           !!task.changes.isDone &&
-          // @ts-ignore
-          !!state.entities[task.id].parentId,
+          !!state.entities[task.id as string]?.parentId,
       ),
       filter(([action, miscCfg, state]) => {
         const task = state.entities[action.task.id];
         if (!task || !task.parentId) {
-          throw new Error('!task || !task.parentId');
+          return false;
         }
         const parent = state.entities[task.parentId] as Task;
         const undoneSubTasks = parent.subTaskIds.filter(
@@ -49,7 +60,7 @@ export class TaskInternalEffects {
         return undoneSubTasks.length === 0;
       }),
       map(([action, miscCfg, state]) =>
-        updateTask({
+        TaskSharedActions.updateTask({
           task: {
             id: (state.entities[action.task.id] as Task).parentId as string,
             changes: { isDone: true },
@@ -59,25 +70,182 @@ export class TaskInternalEffects {
     ),
   );
 
-  autoSetNextTask$: any = createEffect(() =>
+  setDefaultEstimateIfNonGiven$ = createEffect(() =>
+    this._actions$.pipe(
+      ofType(TaskSharedActions.addTask, addSubTask),
+      filter(({ task }) => !task.timeEstimate),
+      withLatestFrom(this._store$.pipe(select(selectConfigFeatureState))),
+      map(([action, cfg]) => ({
+        timeEstimate:
+          (action.task.parentId || (action.type === addSubTask.type && action.parentId)
+            ? cfg.timeTracking.defaultEstimateSubTasks
+            : cfg.timeTracking.defaultEstimate) || 0,
+        task: action.task,
+      })),
+      filter(({ timeEstimate }) => timeEstimate > 0),
+      map(({ task, timeEstimate }) =>
+        TaskSharedActions.updateTask({
+          task: {
+            id: task.id,
+            changes: {
+              timeEstimate,
+            },
+          },
+        }),
+      ),
+    ),
+  );
+
+  /**
+   * #9651 graceful degradation: this client keeps a task's own tags across
+   * convertToSubTask / convertToMainTask, but clients released before that
+   * change (<= v18.20.1) replay these ops by wiping (to-sub) or overwriting
+   * with the parent's (to-main) tagIds. Re-asserting the kept tags as a
+   * follow-up updateTask op makes those clients converge to the same state.
+   * Fires only on the originating client (LOCAL_ACTIONS), only when the
+   * convert actually applied and old clients would end up with different
+   * tags. Removable once pre-change clients are no longer a concern.
+   */
+  reassertOwnTagsAfterConvert$ = createEffect(() =>
+    this._actions$.pipe(
+      ofType(TaskSharedActions.convertToSubTask, TaskSharedActions.convertToMainTask),
+      withLatestFrom(this._store$.pipe(select(selectTaskFeatureState))),
+      mergeMap(([action, state]) => {
+        const isConvertToSub = action.type === TaskSharedActions.convertToSubTask.type;
+        const taskId = isConvertToSub ? action.taskId : action.task.id;
+        const task = state.entities[taskId];
+        if (!task) {
+          return EMPTY;
+        }
+        // TODAY is virtual (rule 5) and must never be re-asserted into synced
+        // tagIds — legacy-dirty data may still carry it on the to-sub path
+        // (to-main already filters in the reducer).
+        const ownTagIds = filterOutTodayTag(task.tagIds ?? []);
+        if (!ownTagIds.length) {
+          return EMPTY;
+        }
+        // NOTE: for a convert the reducer guard rejected (e.g. already nested
+        // under the target), this still reads as applied and emits a redundant
+        // but idempotent op — prior state isn't available here to tell apart.
+        const isApplied = isConvertToSub
+          ? task.parentId === action.targetParentId
+          : !task.parentId;
+        if (!isApplied) {
+          return EMPTY;
+        }
+        if (isConvertToSub) {
+          // Old clients wipe tagIds on to-sub; ownTagIds is non-empty here,
+          // so the fleets always differ — re-assert unconditionally.
+          return of(
+            TaskSharedActions.updateTask({
+              task: { id: taskId, changes: { tagIds: ownTagIds } },
+            }),
+          );
+        }
+        // To-main: an old client's reducer overwrites tagIds with its parent's
+        // tags. Emit only when the kept tags differ — otherwise both fleets
+        // already agree.
+        const parent = state.entities[action.task.parentId as string];
+        const oldClientTagIds = filterOutTodayTag(
+          Array.isArray(parent?.tagIds) ? parent.tagIds : (action.parentTagIds ?? []),
+        );
+        if (fastArrayCompare(ownTagIds, oldClientTagIds)) {
+          return EMPTY;
+        }
+        return of(
+          TaskSharedActions.updateTask({
+            task: { id: taskId, changes: { tagIds: ownTagIds } },
+          }),
+        );
+      }),
+    ),
+  );
+
+  /**
+   * Starting a done task re-opens it. The `setCurrentTask` reducer only moves
+   * the unsynced `currentTaskId` pointer (it may resolve a parent to one of its
+   * subtasks), so the completion flip has to be its own persistent op or other
+   * devices never learn about it (#9904). Reads `currentTaskId` after the
+   * reducer ran so the op targets the task that was actually started.
+   */
+  reopenStartedDoneTask$ = createEffect(() =>
+    this._actions$.pipe(
+      ofType(setCurrentTask),
+      withLatestFrom(this._store$.pipe(select(selectTaskFeatureState))),
+      mergeMap(([, state]) => {
+        const currentTaskId = state.currentTaskId;
+        const currentTask = currentTaskId
+          ? (state.entities[currentTaskId] as Task | undefined)
+          : undefined;
+        if (!currentTask || !currentTask.isDone) {
+          return EMPTY;
+        }
+        return of(
+          TaskSharedActions.updateTask({
+            task: { id: currentTask.id, changes: { isDone: false } },
+          }),
+        );
+      }),
+    ),
+  );
+
+  planStartedTaskForToday$ = createEffect(() =>
+    this._actions$.pipe(
+      ofType(setCurrentTask),
+      withLatestFrom(
+        this._store$.pipe(select(selectTaskFeatureState)),
+        this._store$.pipe(select(selectTodayTaskIds)),
+        this._store$.pipe(select(selectTasksConfig)),
+      ),
+      mergeMap(([, state, todayTaskIds, tasksCfg]) => {
+        const currentTaskId = state.currentTaskId;
+        if (!currentTaskId) {
+          return EMPTY;
+        }
+
+        const currentTask = state.entities[currentTaskId] as Task | undefined;
+        if (
+          !tasksCfg.isAutoAddWorkedOnToToday ||
+          !currentTask ||
+          !!currentTask.dueDay ||
+          typeof currentTask.dueWithTime === 'number' ||
+          todayTaskIds.includes(currentTaskId) ||
+          (!!currentTask.parentId && todayTaskIds.includes(currentTask.parentId))
+        ) {
+          return EMPTY;
+        }
+
+        return of(
+          TaskSharedActions.planTasksForToday({
+            taskIds: [currentTaskId],
+            today: this._dateService.todayStr(),
+            startOfNextDayDiffMs: this._dateService.getStartOfNextDayDiffMs(),
+            parentTaskMap: { [currentTaskId]: currentTask.parentId },
+          }),
+        );
+      }),
+    ),
+  );
+
+  autoSetNextTask$ = createEffect(() =>
     this._actions$.pipe(
       ofType(
         toggleStart,
-        updateTask,
-        deleteTask,
-        moveToArchive_,
+        TaskSharedActions.updateTask,
+        TaskSharedActions.deleteTask,
+        TaskSharedActions.moveToArchive,
 
         moveProjectTaskToBacklogList.type,
         moveProjectTaskToBacklogListAuto.type,
       ),
       withLatestFrom(
-        this._store$.pipe(select(selectMiscConfig)),
+        this._store$.pipe(select(selectConfigFeatureState)),
         this._store$.pipe(select(selectTaskFeatureState)),
-        this._workContextSession.todaysTaskIds$,
-        (action, miscCfg, state, todaysTaskIds) => ({
+        this._workContextSession.mainListTaskIds$,
+        (action, globalCfg, state, todaysTaskIds) => ({
           action,
           state,
-          isAutoStartNextTask: miscCfg.isAutoStartNextTask,
+          isAutoStartNextTask: globalCfg.timeTracking.isAutoStartNextTask,
           todaysTaskIds,
         }),
       ),
@@ -93,7 +261,7 @@ export class TaskInternalEffects {
             break;
           }
 
-          case updateTask.type: {
+          case TaskSharedActions.updateTask.type: {
             // TODO fix typing here
             const a = action as any;
             const { isDone } = a.task.changes;
@@ -117,7 +285,7 @@ export class TaskInternalEffects {
 
           // QUICK FIX FOR THE ISSUE
           // TODO better solution
-          case deleteTask.type: {
+          case TaskSharedActions.deleteTask.type: {
             nextId = state.currentTaskId;
             break;
           }
@@ -126,7 +294,7 @@ export class TaskInternalEffects {
 
           // NOTE: currently no solution for this, but we're probably fine, as the current task
           // gets unset every time we go to the finish day view
-          // case moveToArchive_: {}
+          // case TaskSharedActions.moveToArchive: {}
         }
 
         if (nextId === 'NO_UPDATE') {
@@ -141,12 +309,6 @@ export class TaskInternalEffects {
       }),
     ),
   );
-
-  constructor(
-    private _actions$: Actions,
-    private _store$: Store<any>,
-    private _workContextSession: WorkContextService,
-  ) {}
 
   private _findNextTask(
     state: TaskState,

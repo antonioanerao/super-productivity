@@ -1,32 +1,49 @@
-@import '../../../../variables';
+h1 mat-icon {
+  transform: rotate(45deg);
+}
 
 h1,
-mat-dialog-actions,
-help-section {
+mat-dialog-actions {
   :host-context([dir='rtl']) & {
     direction: rtl;
   }
 }
 
-.form-wrapper {
-  min-width: 280px;
-  max-width: 500px;
+.show-on-small {
+  display: none;
 }
 
-:host::ng-deep mat-form-field .mat-form-field {
-  &-underline {
-    position: relative;
-    bottom: auto;
+@media (max-width: 600px) {
+  mat-dialog-actions {
+    flex-wrap: nowrap;
   }
 
-  &-subscript-wrapper {
-    position: static;
+  .hide-on-small {
+    display: none;
   }
+
+  .show-on-small {
+    display: inline;
+  }
+
+  :host ::ng-deep .icon-on-small {
+    min-width: 0 !important;
+    padding: 0 var(--s2) !important;
+
+    .mat-icon {
+      margin: 0 !important;
+    }
+  }
+}
+
+.form-wrapper {
+  min-width: 280px;
+  max-width: 620px;
 }
 
 :host collapsible {
-  margin-top: $s * 2;
-  margin-bottom: $s * 2;
+  margin-top: var(--s2);
+  margin-bottom: var(--s2);
 }
 
 :host ::ng-deep .collapsible-title {
@@ -35,35 +52,86 @@ help-section {
   font-size: 17px;
 }
 
+:host::ng-deep .repeat-config-container {
+  display: block;
+  border-radius: var(--card-border-radius);
+  margin-left: var(--s2);
+  margin-bottom: var(--s5);
+}
+
 :host::ng-deep .weekdays {
   display: flex;
   flex-wrap: wrap;
+  gap: 0 var(--s);
 
-  .mat-form-field-infix {
+  > * {
     width: auto;
-    min-width: 100px;
-    margin-right: $s * 2;
-    border-top: 0;
+    max-width: 48%;
+    min-width: 0;
   }
+}
+
+// Visibility toggle for the weekday group, which must stay mounted (#8025):
+// hiding via CSS keeps formly from destroying/recreating the child views, which
+// would otherwise break the checkbox/FormControl wiring after a cycle round-trip.
+:host::ng-deep .repeat-cfg-hidden {
+  display: none;
+}
+
+// Inline error shown when a CUSTOM weekly config has no weekday selected (#8025).
+.weekday-error {
+  color: var(--c-warn);
+  font-size: var(--font-size-sm);
+  margin: 0 0 var(--s2);
+  margin-inline-start: var(--s2);
 }
 :host::ng-deep .repeat-cycle {
   display: flex;
 
   > * {
     width: 100%;
-    margin-left: $s * 2;
+    min-width: 0;
+    margin-left: var(--s2);
 
     &:first-child {
       margin-left: 0;
       width: auto;
-
-      .mat-form-field-infix {
-        width: 90px;
-
-        @include mq(xs) {
-          width: 120px;
-        }
-      }
     }
   }
+}
+
+.planned-start-date-field-wrapper {
+  margin-bottom: var(--s2);
+  width: 100%;
+}
+
+.planned-start-date-btn {
+  width: 100%;
+  text-align: start !important;
+  justify-content: start !important;
+  height: 48px !important;
+  padding: 0 var(--s2) !important;
+}
+
+.planned-start-date-btn-content {
+  display: flex;
+  align-items: center;
+  gap: var(--s);
+  width: 100%;
+  text-align: start;
+}
+
+.planned-date-label {
+  font-weight: bold;
+}
+
+.planned-date-val {
+  flex-grow: 1;
+}
+
+.reminder-badge {
+  color: var(--color-warning);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }

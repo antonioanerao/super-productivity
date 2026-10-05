@@ -1,19 +1,26 @@
 import { dirtyDeepCopy } from '../../util/dirtyDeepCopy';
-import { AppDataComplete } from '../sync/sync.model';
 
 let i: number = 0;
 
 const KEY_TO_REPLACE = [
   'username',
   'userName',
+  'loginName',
   'password',
   'token',
+  'apiKey',
+  'secret',
+  'authorization',
   'notes',
   'authCode',
   'accessToken',
   'host',
   'gitlabBaseUrl',
+  'nextcloudBaseUrl',
+  'icalUrl',
+  'organization',
   'syncFilePath',
+  'syncFolderPath',
   'title',
   'originalImgPath',
   'path',
@@ -22,8 +29,21 @@ const KEY_TO_REPLACE = [
   'repo',
   'repoFullname',
   'filterUserName',
+  'filterUsername',
   'caldavUrl',
   'api_key',
+
+  // Issue #6020: Additional PII fields
+  'resourceName',
+  'name',
+  'description',
+  'location',
+  'calProviderId',
+  'summary',
+
+  // Calendar regex filter patterns may contain user-specific title fragments
+  'filterIncludeRegex',
+  'filterExcludeRegex',
 ];
 
 const maskString = (key: string, val: string, counter: number): string => {
@@ -34,11 +54,12 @@ const maskString = (key: string, val: string, counter: number): string => {
   }
 };
 
-const recurse = (obj: any): void => {
-  // eslint-disable-next-line guard-for-in
+const recurse = (obj: unknown): void => {
+  if (typeof obj !== 'object' || obj === null) return;
+
   for (const key in obj) {
     if (Object.prototype.hasOwnProperty.call(obj, key)) {
-      const val = obj[key];
+      const val = (obj as Record<string, unknown>)[key];
       if (Array.isArray(val)) {
         val.forEach((arrVal) => {
           if (typeof arrVal === 'object' && arrVal !== null) {
@@ -48,16 +69,15 @@ const recurse = (obj: any): void => {
       } else if (typeof val === 'object' && val !== null) {
         recurse(val);
       } else if (typeof val === 'string') {
-        obj[key] = maskString(key, val, i);
+        (obj as Record<string, unknown>)[key] = maskString(key, val, i);
       }
     }
     i++;
   }
 };
 
-export const privacyExport = (d: AppDataComplete): string => {
+export const privacyExport = (d: unknown): string => {
   const cpy = dirtyDeepCopy(d);
   recurse(cpy);
-
   return JSON.stringify(cpy);
 };

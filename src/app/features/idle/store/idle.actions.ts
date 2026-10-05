@@ -13,6 +13,7 @@ export const openIdleDialog = createAction(
   props<{
     lastCurrentTaskId: string | null;
     enabledSimpleStopWatchCounters: SimpleCounter[];
+    wasFocusSessionRunning: boolean;
   }>(),
 );
 
@@ -24,10 +25,10 @@ export const setIdleTime = createAction(
 export const idleDialogResult = createAction(
   '[Idle] Dialog result',
   props<{
+    idleTime: number;
+    isResetBreakTimer: boolean;
+    wasFocusSessionRunning: boolean;
     trackItems: IdleTrackItem[];
     simpleCounterToggleBtnsWhenNoTrackItems?: SimpleCounterIdleBtn[];
   }>(),
 );
-
-// TODO better place would be the take a break module, if we ever add a store there
-export const triggerResetBreakTimer = createAction('[Idle] Reset break timer');

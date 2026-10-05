@@ -1,8 +1,7 @@
-import { ChangeDetectionStrategy, Component } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { WorklogService } from '../worklog.service';
 import { DialogWorklogExportComponent } from '../dialog-worklog-export/dialog-worklog-export.component';
 import { MatDialog } from '@angular/material/dialog';
-import { WorklogDataForDay } from '../worklog.model';
 import { expandAnimation, expandFadeAnimation } from '../../../ui/animations/expand.ani';
 import { fadeAnimation } from '../../../ui/animations/fade.ani';
 import { getDateRangeForWeek } from '../../../util/get-date-range-for-week';
@@ -11,7 +10,23 @@ import { Task } from '../../tasks/task.model';
 import { TaskService } from '../../tasks/task.service';
 import { T } from '../../../t.const';
 import { SimpleCounterService } from '../../simple-counter/simple-counter.service';
-import { DateAdapter } from '@angular/material/core';
+import { DateAdapter, MatRipple } from '@angular/material/core';
+import { AsyncPipe, KeyValue, KeyValuePipe } from '@angular/common';
+import { MatIcon } from '@angular/material/icon';
+import { MatButton } from '@angular/material/button';
+import { MomentFormatPipe } from '../../../ui/pipes/moment-format.pipe';
+import { MsToClockStringPipe } from '../../../ui/duration/ms-to-clock-string.pipe';
+import { MsToMinuteClockStringPipe } from '../../../ui/duration/ms-to-minute-clock-string.pipe';
+import { TranslatePipe } from '@ngx-translate/core';
+import { MetricService } from '../../metric/metric.service';
+import { DialogViewArchivedTaskComponent } from '../../tasks/dialog-view-archived-task/dialog-view-archived-task.component';
+import { WorklogTaskRowComponent } from '../worklog-task-row/worklog-task-row.component';
+import { WorklogDay } from '../worklog.model';
+
+export const sortWorklogDays = (
+  a: KeyValue<string, WorklogDay>,
+  b: KeyValue<string, WorklogDay>,
+): number => a.value.dateStr.localeCompare(b.value.dateStr);
 
 @Component({
   selector: 'worklog-week',
@@ -19,23 +34,32 @@ import { DateAdapter } from '@angular/material/core';
   styleUrls: ['./worklog-week.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
   animations: [expandAnimation, expandFadeAnimation, fadeAnimation],
+  imports: [
+    MatRipple,
+    MatIcon,
+    MatButton,
+    AsyncPipe,
+    KeyValuePipe,
+    MomentFormatPipe,
+    MsToClockStringPipe,
+    MsToMinuteClockStringPipe,
+    TranslatePipe,
+    WorklogTaskRowComponent,
+  ],
 })
 export class WorklogWeekComponent {
+  readonly worklogService = inject(WorklogService);
+  readonly simpleCounterService = inject(SimpleCounterService);
+  private readonly _matDialog = inject(MatDialog);
+  private readonly _taskService = inject(TaskService);
+  private _dateAdapter = inject(DateAdapter);
+  private readonly _metricService = inject(MetricService);
+
   visibility: boolean[] = [];
   T: typeof T = T;
   keys: (o: Record<string, unknown>) => string[] = Object.keys;
 
-  constructor(
-    public readonly worklogService: WorklogService,
-    public readonly simpleCounterService: SimpleCounterService,
-    private readonly _matDialog: MatDialog,
-    private readonly _taskService: TaskService,
-    private _dateAdapter: DateAdapter<unknown>,
-  ) {}
-
-  sortDays(a: any, b: any): number {
-    return a.key - b.key;
-  }
+  sortDays = sortWorklogDays;
 
   async exportData(): Promise<void> {
     const now = new Date();
@@ -69,11 +93,14 @@ export class WorklogWeekComponent {
     this.worklogService.refreshWorklog();
   }
 
-  trackByDay(i: number, day: any): string {
-    return day.key;
+  viewTaskDetails(task: Task): void {
+    this._matDialog.open(DialogViewArchivedTaskComponent, {
+      restoreFocus: true,
+      data: { task },
+    });
   }
 
-  trackByLogEntry(i: number, logEntry: WorklogDataForDay): string {
-    return logEntry.task.id;
+  focusSummaryFor(dateStr: string): { count: number; total: number } | undefined {
+    return this._metricService.getFocusSummaryForDay(dateStr);
   }
 }

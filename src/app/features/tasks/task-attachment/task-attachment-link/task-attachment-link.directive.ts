@@ -1,20 +1,19 @@
-import { Directive, HostListener, Input } from '@angular/core';
+import { Directive, HostListener, inject, input } from '@angular/core';
 import { IS_ELECTRON } from '../../../../app.constants';
 import { TaskAttachmentType } from '../task-attachment.model';
 import { SnackService } from '../../../../core/snack/snack.service';
 import { T } from '../../../../t.const';
 
-@Directive({
-  selector: '[taskAttachmentLink]',
-})
+@Directive({ selector: '[taskAttachmentLink]' })
 export class TaskAttachmentLinkDirective {
-  @Input() type?: TaskAttachmentType;
-  @Input() href?: string;
+  private _snackService = inject(SnackService);
 
-  constructor(private _snackService: SnackService) {}
+  readonly type = input<TaskAttachmentType>();
+  readonly href = input<string>();
 
   @HostListener('click', ['$event']) onClick(ev: Event): void {
-    if (!this.href) {
+    const href = this.href();
+    if (!href) {
       throw new Error('No href');
     }
 
@@ -22,23 +21,39 @@ export class TaskAttachmentLinkDirective {
       const el = ev.target as HTMLElement;
       el.blur();
     }
+
+    if (!IS_ELECTRON && this._isLocalFileUrl(href)) {
+      ev.preventDefault();
+      this._snackService.open({
+        msg: T.F.ATTACHMENT.LOCAL_FILE_UNAVAILABLE,
+        type: 'ERROR',
+      });
+      return;
+    }
+
     if (IS_ELECTRON) {
       ev.preventDefault();
-      if (!this.type || this.type === 'LINK') {
-        this._openExternalUrl(this.href);
-      } else if (this.type === 'FILE') {
-        window.ea.openPath(this.href);
-      } else if (this.type === 'COMMAND') {
+      const type = this.type();
+      if (!type || type === 'LINK') {
+        this._openExternalUrl(href);
+      } else if (type === 'FILE') {
+        window.ea.openPath(href);
+      } else if (type === 'COMMAND') {
+        // COMMAND attachments can no longer run shell commands: the exec IPC was
+        // removed to close GHSA-256q. Legacy/imported COMMAND attachments still
+        // render but are inert on click.
         this._snackService.open({
-          msg: T.GLOBAL_SNACK.RUNNING_X,
-          translateParams: { str: this.href },
-          ico: 'laptop_windows',
+          msg: T.F.ATTACHMENT.COMMAND_UNSUPPORTED,
+          type: 'ERROR',
         });
-        this._exec(this.href);
       }
-    } else if (this.type === 'LINK') {
-      this._openExternalUrl(this.href);
+    } else if (this.type() === 'LINK') {
+      this._openExternalUrl(href);
     }
+  }
+
+  private _isLocalFileUrl(url: string): boolean {
+    return url.toLowerCase().startsWith('file://');
   }
 
   private _openExternalUrl(rawUrl: string): void {
@@ -59,9 +74,5 @@ export class TaskAttachmentLinkDirective {
         win.focus();
       }
     }
-  }
-
-  private _exec(command: string): void {
-    window.ea.exec(command);
   }
 }

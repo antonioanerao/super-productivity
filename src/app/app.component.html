@@ -1,114 +1,151 @@
-<ng-container *ngIf="isShowUi$|async">
+@if (resolvedBgImage(); as bgImage) {
   <div
-    *ngIf="(globalThemeService.backgroundImg$|async) as bgImage"
     [style.background]="'url(' + bgImage + ')'"
+    [style.filter]="bgImageBlurFilter()"
+    [class.is-blurred]="bgImageBlur() > 0"
     class="bg-image"
   ></div>
-
-  <!--TODO move inside page container somehow -->
+  <div
+    class="bg-overlay"
+    [style.opacity]="bgOverlayOpacity()"
+  ></div>
+}
+<!--TODO move inside page container somehow -->
+@if (layoutService.isShowAddTaskBar()) {
   <add-task-bar
-    (blurred)="layoutService.hideAddTaskBar()"
-    *ngIf="layoutService.isShowAddTaskBar$|async"
-    [isElevated]="true"
+    (closed)="layoutService.hideAddTaskBar()"
+    (done)="layoutService.hideAddTaskBar()"
+    (afterTaskAdd)="onTaskAdded($event)"
+    [isGlobalBarVariant]="true"
     class="global"
   ></add-task-bar>
+}
+@if (layoutService.isShowAddTaskBar()) {
   <div
-    *ngIf="(layoutService.isShowAddTaskBar$|async)"
+    (click)="layoutService.hideAddTaskBar()"
     @fade
     class="backdrop"
   ></div>
-  <search-bar
-    (blurred)="layoutService.hideSearchBar()"
-    *ngIf="layoutService.isShowSearchBar$|async"
-  ></search-bar>
+}
+<!-- -->
+<!--
+  Perf note: the @else branch means toggling the focus overlay destroys and
+  rebuilds the entire app shell (side nav, router outlet, work view, every task
+  row). @defer only delays loading the overlay; it does not keep the shell
+  alive. Rendering the overlay as an absolutely positioned sibling and hiding
+  the shell with CSS would avoid the teardown. Only visible when profiling
+  overlay *close*.
+-->
+@if (isShowFocusOverlay()) {
+  @defer (on immediate) {
+    <focus-mode-overlay @warp></focus-mode-overlay>
+  }
+} @else {
   <div
-    *ngIf="(layoutService.isShowSearchBar$|async)"
-    @fade
-    class="backdrop"
-  ></div>
-  <mat-sidenav-container
+    class="app-container"
+    [style.height]="iosShellHeight()"
+    [style.min-height]="iosShellHeight()"
+    [class.has-mobile-bottom-nav]="isShowMobileButtonNav()"
+    [class.is-multi-selecting]="isMultiSelecting()"
+    [class.has-vertical-action-bar]="isVerticalActionBar()"
+    [class.app-entrance]="isAppEntrance()"
     [dir]="isRTL ? 'rtl' : 'ltr'"
-    *ngIf="!(focusModeService.isShowFocusOverlay$|async)"
   >
-    <mat-sidenav
-      (closedStart)="layoutService.hideSideNav()"
-      [mode]="(layoutService.isNavOver$|async) ? 'over' : 'side'"
-      [opened]="(layoutService.isShowSideNav$|async)"
-      position="start"
+    <magic-side-nav
+      #magicSideNav
+      [activeWorkContextId]="getActiveWorkContextId()"
     >
-      <side-nav #sideNavElRef></side-nav>
-      <ng-container *ngIf="workContextService.isActiveWorkContextProject$|async">
-      </ng-container>
-    </mat-sidenav>
+    </magic-side-nav>
 
-    <mat-sidenav-content>
-      <header
-        [class.isNotScrolled]="!(layoutService.isScrolled$|async)"
-        class="header-wrapper"
-      >
-        <main-header></main-header>
-        <bookmark-bar
-          *ngIf="(workContextService.isActiveWorkContextProject$|async)"
-        ></bookmark-bar>
-        <banner></banner>
-      </header>
+    <main class="main-content">
+      <right-panel>
+        <header
+          [class.isNotScrolled]="!layoutService.isWorkViewScrolled()"
+          class="header-wrapper"
+        >
+          <main-header></main-header>
 
-      <div
-        #routeWrapper
-        [@warpRoute]="getPage(o)"
-        class="route-wrapper"
-      >
-        <router-outlet #o="outlet"></router-outlet>
-      </div>
+          <banner></banner>
+        </header>
+
+        <div
+          #routeWrapper
+          [@warpRoute]="getPage(o)"
+          class="route-wrapper"
+        >
+          <router-outlet #o="outlet"></router-outlet>
+        </div>
+      </right-panel>
       <global-progress-bar></global-progress-bar>
-    </mat-sidenav-content>
-  </mat-sidenav-container>
+      <task-multi-select-bar></task-multi-select-bar>
+    </main>
 
-  <focus-mode-overlay
-    @warp
-    *ngIf="focusModeService.isShowFocusOverlay$|async"
-  ></focus-mode-overlay>
-</ng-container>
-
-<div
-  *ngIf="!(syncTriggerService.afterInitialSyncDoneAndDataLoadedInitially$|async) || (imexMetaService.isDataImportInProgress$|async)"
-  class="loading-full-page-wrapper"
->
-  <global-progress-bar></global-progress-bar>
-
-  <div class="app-loading">
-    <div class="productivity-tip">
-      <h2 id="heading">{{productivityTipTitle}}</h2>
-      <p id="text">{{productivityTipText}}</p>
-    </div>
-
-    <div class="spinner">
-      <div class="double-bounce1"></div>
-      <div class="double-bounce2"></div>
-    </div>
-
-    <svg
-      class="logo"
-      viewBox="0 0 64 64"
-    >
-      <path
-        d="M 0.65537046,34.582787 32.452267,63.855301 63.791548,0.94356422 30.222644,47.722023 Z"
-        id="path3395"
-        style="
-          fill: #000000;
-          fill-opacity: 1;
-          fill-rule: evenodd;
-          stroke: none;
-          stroke-width: 1.46761858;
-          stroke-linecap: butt;
-          stroke-linejoin: bevel;
-          stroke-miterlimit: 13.80000019;
-          stroke-dasharray: none;
-          stroke-opacity: 1;
-        "
-      />
-    </svg>
+    <!-- Mobile Bottom Navigation -->
+    @if (isShowMobileButtonNav()) {
+      <mobile-bottom-nav
+        [isEntrance]="isAppEntrance()"
+        (toggleMobileNavEvent)="magicSideNav.toggleMobileNav()"
+      ></mobile-bottom-nav>
+    }
   </div>
-</div>
+}
+<!-- -->
 
-<shepherd></shepherd>
+@if (onboardingHintService.currentStep()) {
+  <onboarding-hint></onboarding-hint>
+}
+
+<!-- Background context menu -->
+@if (routeWrapper) {
+  <context-menu
+    [contextMenu]="backgroundContextMenu"
+    [rightClickTriggerEl]="routeWrapper.nativeElement"
+    [isEnabled]="isWorkViewPage()"
+    [allowedSelectors]="'
+      .route-wrapper,
+      .today,
+      .task-list-wrapper,
+      .task-list-wrapper > *,
+      .task-list-inner,
+      .work-view-header,
+      .route-wrapper > *,
+      .add-more-or-finish,
+      .add-more-or-finish > *,
+      .no-tasks-illu-wrapper,
+      .no-tasks-illu-wrapper *,
+      .finish-day-button-wrapper'"
+  ></context-menu>
+}
+
+<ng-template #backgroundContextMenu>
+  <div style="min-width: 200px; max-width: 300px">
+    <button
+      mat-menu-item
+      (click)="openSettings()"
+      class="background-menu-item"
+      style="width: 100%; overflow: hidden"
+    >
+      <mat-icon>settings</mat-icon>
+      <span>{{
+        (workContextService.activeWorkContextType === 'PROJECT'
+          ? T.APP.CONTEXT_MENU.CHANGE_PROJECT_SETTINGS
+          : T.APP.CONTEXT_MENU.CHANGE_TAG_SETTINGS
+        ) | translate
+      }}</span>
+    </button>
+    @if (
+      workContextService.activeWorkContextType === 'PROJECT' ||
+      workContextService.activeWorkContextId === TODAY_TAG_ID
+    ) {
+      <button
+        mat-menu-item
+        (click)="addSection()"
+        class="background-menu-item"
+        style="width: 100%; overflow: hidden"
+      >
+        <mat-icon>list</mat-icon>
+        <span>{{ T.MH.ADD_SECTION | translate }}</span>
+      </button>
+    }
+  </div>
+</ng-template>
